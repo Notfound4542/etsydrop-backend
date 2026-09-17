@@ -3,6 +3,19 @@
 -- =====================================================================
 -- À exécuter dans l'éditeur SQL de Supabase (ou via une migration).
 -- Ne remplace aucune table existante — additif uniquement.
+--
+-- Idempotent par construction : CREATE TABLE IF NOT EXISTS ne modifie
+-- JAMAIS une table déjà existante, même si son schéma diverge (colonne
+-- manquante, etc.) — c'est exactement ce qui a fait échouer une exécution
+-- précédente avec "column listing_id does not exist" : la table
+-- `promotions` existait déjà (créée autrement, sans cette colonne), donc
+-- son CREATE TABLE n'a rien fait, et le CREATE INDEX qui suivait a échoué
+-- contre la vraie table. Chaque table est donc suivie d'ALTER TABLE ...
+-- ADD COLUMN IF NOT EXISTS pour CHAQUE colonne, qui s'applique que la
+-- table vienne d'être créée ou qu'elle existait déjà sous une forme
+-- incomplète. Les index sont nommés explicitement et posés avec
+-- IF NOT EXISTS pour la même raison (Postgres n'a pas de "CREATE INDEX
+-- IF NOT EXISTS" sans nom explicite).
 
 -- === AI_COSTS — suivi du coût des générations IA (image + fiche) ===
 CREATE TABLE IF NOT EXISTS ai_costs (
@@ -12,7 +25,11 @@ CREATE TABLE IF NOT EXISTS ai_costs (
   cost_eur DECIMAL(10,4) NOT NULL,
   created_at TIMESTAMPTZ DEFAULT now()
 );
-CREATE INDEX ON ai_costs(user_id, created_at DESC);
+ALTER TABLE ai_costs ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id);
+ALTER TABLE ai_costs ADD COLUMN IF NOT EXISTS type TEXT;
+ALTER TABLE ai_costs ADD COLUMN IF NOT EXISTS cost_eur DECIMAL(10,4) DEFAULT 0;
+ALTER TABLE ai_costs ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
+CREATE INDEX IF NOT EXISTS idx_ai_costs_user_created ON ai_costs(user_id, created_at DESC);
 
 -- === PROMOTIONS — publications & performance publicitaire par plateforme ===
 CREATE TABLE IF NOT EXISTS promotions (
@@ -26,12 +43,26 @@ CREATE TABLE IF NOT EXISTS promotions (
   clicks INTEGER DEFAULT 0,
   spend_eur DECIMAL(10,2) DEFAULT 0,
   revenue_eur DECIMAL(10,2) DEFAULT 0,
-  roas DECIMAL(6,2) GENERATED ALWAYS AS (CASE WHEN spend_eur > 0 THEN revenue_eur / spend_eur ELSE 0 END) STORED,
   published_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ DEFAULT now()
 );
-CREATE INDEX ON promotions(user_id, listing_id);
-CREATE INDEX ON promotions(user_id, platform);
+ALTER TABLE promotions ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id);
+ALTER TABLE promotions ADD COLUMN IF NOT EXISTS listing_id TEXT DEFAULT '';
+ALTER TABLE promotions ADD COLUMN IF NOT EXISTS platform TEXT DEFAULT 'organic';
+ALTER TABLE promotions ADD COLUMN IF NOT EXISTS external_id TEXT;
+ALTER TABLE promotions ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'draft';
+ALTER TABLE promotions ADD COLUMN IF NOT EXISTS impressions INTEGER DEFAULT 0;
+ALTER TABLE promotions ADD COLUMN IF NOT EXISTS clicks INTEGER DEFAULT 0;
+ALTER TABLE promotions ADD COLUMN IF NOT EXISTS spend_eur DECIMAL(10,2) DEFAULT 0;
+ALTER TABLE promotions ADD COLUMN IF NOT EXISTS revenue_eur DECIMAL(10,2) DEFAULT 0;
+-- roas est un GENERATED column : ajouté après spend_eur/revenue_eur, qui
+-- doivent déjà exister sur la table au moment où celui-ci est évalué.
+ALTER TABLE promotions ADD COLUMN IF NOT EXISTS roas DECIMAL(6,2)
+  GENERATED ALWAYS AS (CASE WHEN spend_eur > 0 THEN revenue_eur / spend_eur ELSE 0 END) STORED;
+ALTER TABLE promotions ADD COLUMN IF NOT EXISTS published_at TIMESTAMPTZ;
+ALTER TABLE promotions ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
+CREATE INDEX IF NOT EXISTS idx_promotions_user_listing ON promotions(user_id, listing_id);
+CREATE INDEX IF NOT EXISTS idx_promotions_user_platform ON promotions(user_id, platform);
 
 -- === PROFILES — plan d'abonnement Stripe (Free / Pro) ===
 CREATE TABLE IF NOT EXISTS profiles (
@@ -41,6 +72,10 @@ CREATE TABLE IF NOT EXISTS profiles (
   stripe_customer_id TEXT,
   created_at TIMESTAMPTZ DEFAULT now()
 );
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS plan TEXT DEFAULT 'free';
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS plan_started_at TIMESTAMPTZ;
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT;
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
 
 -- =====================================================================
 -- Tables fondamentales (Phase 1) — jamais migrées, cause du 500 sur
@@ -59,6 +94,10 @@ CREATE TABLE IF NOT EXISTS etsy_tokens (
   expires_in INTEGER,
   updated_at TIMESTAMPTZ DEFAULT now()
 );
+ALTER TABLE etsy_tokens ADD COLUMN IF NOT EXISTS access_token TEXT DEFAULT '';
+ALTER TABLE etsy_tokens ADD COLUMN IF NOT EXISTS refresh_token TEXT DEFAULT '';
+ALTER TABLE etsy_tokens ADD COLUMN IF NOT EXISTS expires_in INTEGER;
+ALTER TABLE etsy_tokens ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
 
 -- === LISTINGS — fiches produit du catalogue ===
 CREATE TABLE IF NOT EXISTS listings (
@@ -75,7 +114,18 @@ CREATE TABLE IF NOT EXISTS listings (
   margin_pct DECIMAL(5,2) DEFAULT 0,
   created_at TIMESTAMPTZ DEFAULT now()
 );
-CREATE INDEX ON listings(user_id, stock_status);
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id);
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS name TEXT DEFAULT '';
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS description TEXT DEFAULT '';
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS tags TEXT[] DEFAULT '{}';
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS price_min DECIMAL(10,2) DEFAULT 0;
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS price_max DECIMAL(10,2) DEFAULT 0;
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS supplier TEXT DEFAULT 'my_catalog';
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS variants JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS stock_status TEXT DEFAULT 'available';
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS margin_pct DECIMAL(5,2) DEFAULT 0;
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
+CREATE INDEX IF NOT EXISTS idx_listings_user_stock ON listings(user_id, stock_status);
 
 -- === ORDERS — commandes Etsy synchronisées + fulfillment ===
 CREATE TABLE IF NOT EXISTS orders (
@@ -90,7 +140,16 @@ CREATE TABLE IF NOT EXISTS orders (
   tracking_number TEXT,
   created_at TIMESTAMPTZ DEFAULT now()
 );
-CREATE INDEX ON orders(user_id, created_at DESC);
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id);
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS etsy_order_id TEXT DEFAULT '';
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_name TEXT DEFAULT '';
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS product_name TEXT DEFAULT '';
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS supplier TEXT DEFAULT 'my_catalog';
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS amount DECIMAL(10,2) DEFAULT 0;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'pending_supplier';
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS tracking_number TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
+CREATE INDEX IF NOT EXISTS idx_orders_user_created ON orders(user_id, created_at DESC);
 
 -- === ANALYTICS_SUMMARY — snapshot revenus/marge par utilisateur ===
 -- Une ligne par utilisateur (voir .maybe_single() dans routers/analytics.py) —
@@ -104,6 +163,12 @@ CREATE TABLE IF NOT EXISTS analytics_summary (
   history JSONB DEFAULT '[]'::jsonb,  -- [{period, revenue, profit}]
   updated_at TIMESTAMPTZ DEFAULT now()
 );
+ALTER TABLE analytics_summary ADD COLUMN IF NOT EXISTS revenue_total DECIMAL(12,2) DEFAULT 0;
+ALTER TABLE analytics_summary ADD COLUMN IF NOT EXISTS net_margin_pct DECIMAL(5,2) DEFAULT 0;
+ALTER TABLE analytics_summary ADD COLUMN IF NOT EXISTS conversion_rate_pct DECIMAL(5,2) DEFAULT 0;
+ALTER TABLE analytics_summary ADD COLUMN IF NOT EXISTS net_profit DECIMAL(12,2) DEFAULT 0;
+ALTER TABLE analytics_summary ADD COLUMN IF NOT EXISTS history JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE analytics_summary ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
 
 -- === KEYWORDS — référentiel mots-clés partagé (pas de scoping par utilisateur) ===
 CREATE TABLE IF NOT EXISTS keywords (
@@ -115,6 +180,11 @@ CREATE TABLE IF NOT EXISTS keywords (
   trend_pct DECIMAL(5,2) DEFAULT 0,
   score INTEGER DEFAULT 0
 );
+ALTER TABLE keywords ADD COLUMN IF NOT EXISTS volume_monthly INTEGER DEFAULT 0;
+ALTER TABLE keywords ADD COLUMN IF NOT EXISTS total_sales INTEGER DEFAULT 0;
+ALTER TABLE keywords ADD COLUMN IF NOT EXISTS competition TEXT;
+ALTER TABLE keywords ADD COLUMN IF NOT EXISTS trend_pct DECIMAL(5,2) DEFAULT 0;
+ALTER TABLE keywords ADD COLUMN IF NOT EXISTS score INTEGER DEFAULT 0;
 
 -- === SOURCING_CACHE — cache de comparaison fournisseurs (voir routers/sourcing.py > /compare) ===
 CREATE TABLE IF NOT EXISTS sourcing_cache (
@@ -126,7 +196,13 @@ CREATE TABLE IF NOT EXISTS sourcing_cache (
   recommended_sell_price DECIMAL(10,2),
   created_at TIMESTAMPTZ DEFAULT now()
 );
-CREATE INDEX ON sourcing_cache(user_id, product_name);
+ALTER TABLE sourcing_cache ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id);
+ALTER TABLE sourcing_cache ADD COLUMN IF NOT EXISTS product_name TEXT DEFAULT '';
+ALTER TABLE sourcing_cache ADD COLUMN IF NOT EXISTS sources JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE sourcing_cache ADD COLUMN IF NOT EXISTS best_price JSONB;
+ALTER TABLE sourcing_cache ADD COLUMN IF NOT EXISTS recommended_sell_price DECIMAL(10,2);
+ALTER TABLE sourcing_cache ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
+CREATE INDEX IF NOT EXISTS idx_sourcing_cache_user_product ON sourcing_cache(user_id, product_name);
 
 -- =====================================================================
 -- Row Level Security — la clé "anon/publishable" Supabase est exposée
