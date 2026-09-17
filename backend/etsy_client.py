@@ -81,6 +81,109 @@ def get_etsy_shop_id(user_id: str) -> int:
     return shop_id
 
 
+# === IMPORT DES FICHES ACTIVES D'UNE BOUTIQUE CONNECTÉE ===
+# Partagé entre routers/auth.py (déclenché automatiquement juste après le
+# callback OAuth) et routers/listings.py > POST /sync (déclenchement manuel,
+# nécessaire quand shop_id/le token ont été mis à jour autrement qu'en
+# repassant par tout le flow OAuth — ex. un correctif SQL direct en base).
+async def sync_etsy_listings(user_id: str, access_token: str, shop_id: Optional[int]) -> int:
+    """
+    Importe les fiches actives de la boutique Etsy connectée dans la table
+    `listings`. Upsert sur (user_id, etsy_listing_id) — voir l'index unique
+    (PLEIN, pas partiel — voir database_schema.sql) dans database_schema.sql —
+    donc une resynchronisation met à jour les fiches déjà importées au lieu
+    de les dupliquer.
+
+    Ne lève jamais : appelée aussi bien depuis le callback OAuth (qui ne doit
+    jamais planter pour un souci de sync) que depuis un endpoint manuel (qui,
+    lui, doit pouvoir remonter un compte de 0 sans crasher).
+    """
+    if not shop_id:
+        logger.warning("Sync listings Etsy ignorée pour user_id=%s : shop_id non résolu.", user_id)
+        return 0
+
+    try:
+        payload = await etsy_get(
+            f"/shops/{shop_id}/listings/active", access_token=access_token, params={"limit": 100}
+        )
+        etsy_listings = payload.get("results", []) if isinstance(payload, dict) else []
+    except Exception as exc:
+        logger.warning("Sync listings Etsy échouée pour user_id=%s : %s: %s", user_id, type(exc).__name__, exc)
+        return 0
+
+    # Les fiches importées doivent rester compatibles avec le modèle Listing
+    # (voir models.py) — sans ça, la lecture ultérieure via GET /api/listings/
+    # plante en ResponseValidationError (500 générique) au lieu de renvoyer
+    # les données. D'où les tailles/valeurs par défaut ci-dessous.
+    rows = []
+    for item in etsy_listings:
+        try:
+            listing_id = str(item.get("listing_id") or "")
+            if not listing_id:
+                continue
+
+            title = (item.get("title") or "Fiche Etsy sans titre").strip()[:140] or "Fiche Etsy"
+            if len(title) < 3:
+                title = title.ljust(3, ".")
+
+            description = (item.get("description") or "").strip()[:2000]
+            if len(description) < 10:
+                description = f"{title} — fiche importée depuis Etsy."
+
+            price_data = item.get("price")
+            if isinstance(price_data, dict) and "amount" in price_data:
+                price = float(price_data["amount"]) / float(price_data.get("divisor", 100) or 100)
+            else:
+                price = float(item.get("price") or 0)
+
+            tags = [t for t in (item.get("tags") or []) if t][:13] or ["etsy import"]
+
+            quantity = int(item.get("quantity") or 0)
+            if quantity <= 0:
+                stock_status = "out_of_stock"
+            elif quantity < 5:
+                stock_status = "low_stock"
+            else:
+                stock_status = "available"
+
+            rows.append(
+                {
+                    "user_id": user_id,
+                    "etsy_listing_id": listing_id,
+                    "name": title,
+                    "description": description,
+                    "tags": tags,
+                    "price_min": round(price, 2),
+                    "price_max": round(price, 2),
+                    "supplier": "my_catalog",
+                    "variants": [],
+                    "stock_status": stock_status,
+                    "margin_pct": 0,
+                }
+            )
+        except (TypeError, ValueError):
+            continue
+
+    if not rows:
+        return 0
+
+    try:
+        get_supabase().table("listings").upsert(rows, on_conflict="user_id,etsy_listing_id").execute()
+    except Exception as exc:
+        # error (pas warning) + exc_info : ce upsert échouait silencieusement en
+        # prod (index unique partiel incompatible avec ON CONFLICT sans WHERE —
+        # voir database_schema.sql > idx_listings_user_etsy_id) sans que rien ne
+        # le distingue d'un simple rate limit dans les logs.
+        logger.error(
+            "Écriture des listings Etsy échouée pour user_id=%s : %s: %s",
+            user_id, type(exc).__name__, exc,
+            exc_info=True,
+        )
+        return 0
+
+    return len(rows)
+
+
 # === APPEL GET GÉNÉRIQUE VERS L'API ETSY V3 ===
 async def etsy_get(path: str, *, params: Optional[dict] = None, access_token: Optional[str] = None) -> Any:
     """
