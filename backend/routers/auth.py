@@ -221,7 +221,15 @@ async def _sync_etsy_listings(user_id: str, access_token: str, shop_id: Optional
     try:
         get_supabase().table("listings").upsert(rows, on_conflict="user_id,etsy_listing_id").execute()
     except Exception as exc:
-        logger.warning("Écriture des listings Etsy échouée pour user_id=%s : %s: %s", user_id, type(exc).__name__, exc)
+        # error (pas warning) + exc_info : ce upsert échouait silencieusement en
+        # prod (index unique partiel incompatible avec ON CONFLICT sans WHERE —
+        # voir database_schema.sql > idx_listings_user_etsy_id) sans que rien ne
+        # le distingue d'un simple rate limit dans les logs.
+        logger.error(
+            "Écriture des listings Etsy échouée pour user_id=%s : %s: %s",
+            user_id, type(exc).__name__, exc,
+            exc_info=True,
+        )
         return 0
 
     return len(rows)

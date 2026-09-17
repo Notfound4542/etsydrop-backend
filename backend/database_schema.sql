@@ -145,7 +145,22 @@ ALTER TABLE listings ADD COLUMN IF NOT EXISTS stock_status TEXT DEFAULT 'availab
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS margin_pct DECIMAL(5,2) DEFAULT 0;
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
 CREATE INDEX IF NOT EXISTS idx_listings_user_stock ON listings(user_id, stock_status);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_listings_user_etsy_id ON listings(user_id, etsy_listing_id) WHERE etsy_listing_id IS NOT NULL;
+-- PAS un index partiel (WHERE etsy_listing_id IS NOT NULL) : l'upsert de
+-- _sync_etsy_listings (routers/auth.py) appelle .upsert(rows,
+-- on_conflict="user_id,etsy_listing_id"), que supabase-py/PostgREST traduit
+-- en "ON CONFLICT (user_id, etsy_listing_id) DO UPDATE ..." SANS clause
+-- WHERE. Postgres n'utilise un index partiel comme arbitre ON CONFLICT que
+-- si la clause ON CONFLICT porte le même WHERE au caractère près — ce que
+-- PostgREST ne permet pas de spécifier. Résultat concret observé en prod :
+-- Etsy renvoie bien les fiches (confirmé via test_etsy.py, listings actifs
+-- non-vides), mais l'upsert échoue avec "no unique or exclusion constraint
+-- matching the ON CONFLICT specification", silencieusement avalé par le
+-- try/except de _sync_etsy_listings -> Catalogue reste à 0 fiche. Un index
+-- unique PLEIN (sans WHERE) fonctionne ici sans compromis : Postgres traite
+-- déjà chaque NULL comme distinct des autres, donc plusieurs fiches créées
+-- à la main (etsy_listing_id NULL) restent autorisées.
+DROP INDEX IF EXISTS idx_listings_user_etsy_id;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_listings_user_etsy_id ON listings(user_id, etsy_listing_id);
 
 -- === ORDERS — commandes Etsy synchronisées + fulfillment ===
 CREATE TABLE IF NOT EXISTS orders (
