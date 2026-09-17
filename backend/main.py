@@ -6,7 +6,7 @@
 #   uvicorn main:app --reload --port 8000
 #
 # Sécurité mise en place ici (voir CLAUDE.md > CYBERSÉCURITÉ) :
-#   - CORS restreint à localhost:5500 (dev) + domaine Vercel (prod)
+#   - CORS restreint à localhost:5500 (dev) + domaine GitHub Pages (prod)
 #   - Headers de sécurité HTTP sur toutes les réponses
 #   - Rate limiting global 60 req/min/IP via slowapi
 #   - Gestionnaire d'erreurs global qui ne fuite jamais de détails internes
@@ -54,11 +54,11 @@ ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 
 # === APPLICATION ===
 app = FastAPI(
-    title="EtsyDrop API",
-    description="Backend FastAPI pour EtsyDrop — sourcing, fulfillment, SEO et analytics pour vendeurs Etsy.",
-    version="0.1.0",
-    docs_url="/api/docs",
-    redoc_url=None,
+        title="EtsyDrop API",
+        description="Backend FastAPI pour EtsyDrop — sourcing, fulfillment, SEO et analytics pour vendeurs Etsy.",
+        version="0.1.0",
+        docs_url="/api/docs",
+        redoc_url=None,
 )
 
 app.state.limiter = limiter
@@ -66,28 +66,35 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
 
 # === CORS ===
-# Uniquement l'environnement de dev local et le domaine Vercel de production.
-# Ces valeurs viennent du .env — jamais d'origine "*" en production.
-FRONTEND_ORIGIN_LOCAL = os.getenv("FRONTEND_ORIGIN_LOCAL", "http://localhost:5500")
-FRONTEND_ORIGIN_PROD = os.getenv("FRONTEND_ORIGIN_PROD", "https://etsydrop.vercel.app")
+# Le frontend est hébergé sur GitHub Pages. On lit l'origin depuis l'env var
+# en nettoyant les guillemets éventuels, et on ajoute l'URL GitHub Pages
+# comme fallback systématique pour éviter les problèmes de valeur manquante.
+FRONTEND_ORIGIN_LOCAL = os.getenv("FRONTEND_ORIGIN_LOCAL", "http://localhost:5500").strip()
+FRONTEND_ORIGIN_PROD = os.getenv("FRONTEND_ORIGIN_PROD", "https://notfound4542.github.io").strip().strip("\"'")
+
+ALLOWED_ORIGINS = list({
+        FRONTEND_ORIGIN_LOCAL,
+        FRONTEND_ORIGIN_PROD,
+        "https://notfound4542.github.io",
+})
 
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[FRONTEND_ORIGIN_LOCAL, FRONTEND_ORIGIN_PROD],
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
-    allow_headers=["Authorization", "Content-Type"],
+        CORSMiddleware,
+        allow_origins=ALLOWED_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+        allow_headers=["Authorization", "Content-Type"],
 )
 
 
 # === HEADERS DE SÉCURITÉ HTTP ===
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
-    response = await call_next(request)
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
-    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    return response
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        return response
 
 
 # === GESTIONNAIRE D'ERREURS GLOBAL ===
@@ -95,8 +102,8 @@ async def add_security_headers(request: Request, call_next):
 # cela pourrait exposer un chemin de fichier, une clé partielle ou un détail interne.
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
-    logger.error("Erreur non gérée sur %s %s : %s", request.method, request.url.path, type(exc).__name__)
-    return JSONResponse(status_code=500, content={"detail": "Erreur interne du serveur."})
+        logger.error("Erreur non gérée sur %s %s : %s", request.method, request.url.path, type(exc).__name__)
+        return JSONResponse(status_code=500, content={"detail": "Erreur interne du serveur."})
 
 
 # === ROUTERS ===
@@ -120,4 +127,5 @@ app.include_router(billing.router, prefix="/api/billing", tags=["billing"])
 # === HEALTH CHECK ===
 @app.get("/api/health", tags=["health"])
 async def health_check():
-    return {"status": "ok", "service": "etsydrop-api", "environment": ENVIRONMENT}
+        return {"status": "ok", "service": "etsydrop-api", "environment": ENVIRONMENT}
+    
