@@ -146,7 +146,7 @@
 
     // Etsy OAuth
     me:             ()  => api('/api/auth/me'),
-    etsyLogin:      ()  => api('/api/auth/etsy/login'),
+    etsyLogin:      (shopName) => api('/api/auth/etsy/login?shop_name=' + encodeURIComponent(shopName)),
     etsyDisconnect: ()  => api('/api/auth/etsy/disconnect', { method:'DELETE' }),
 
     // Keywords / SEO
@@ -386,9 +386,14 @@
   });
 
   /* ---- Helpers exposés aux boutons du template ---- */
-  window.edConnectEtsy = async function() {
+  window.edConnectEtsy = async function(shopName) {
+    const name = (shopName || '').trim();
+    if (!name) {
+      alert('Indique le nom exact de ta boutique Etsy avant de te connecter.');
+      return;
+    }
     try {
-      const data = await window.EDAPI.etsyLogin();
+      const data = await window.EDAPI.etsyLogin(name);
       if (data.authorize_url) window.location.href = data.authorize_url;
     } catch(e) {
       alert('Erreur Etsy : ' + e.message);
@@ -1660,8 +1665,16 @@
             <span class="tag-pill" :class="etsyConnected ? 'bg-accent-light text-accent-dark' : 'bg-gray-100 text-gray-600'" x-text="etsyConnected ? 'Connectée' : 'Non connectée'"></span>
           </div>
           <p class="text-xs text-gray-500 mb-4" x-show="currentUserEmail" x-text="'Compte EtsyDrop : ' + currentUserEmail"></p>
+          <!-- Nom de boutique demandé avant l'OAuth : GET /users/{id}/shops (qui
+               aurait permis de le déduire après coup) est bloqué au tier Etsy
+               actuel de cette app — voir backend/routers/auth.py > etsy_callback. -->
+          <div x-show="!etsyConnected" class="flex items-center gap-2 mb-3">
+            <input x-model="etsyShopNameInput" type="text" placeholder="Nom exact de ta boutique Etsy (ex: LuminoBijoux)"
+                   class="flex-1 max-w-xs border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-accent">
+          </div>
           <div class="flex items-center gap-3">
-            <button x-show="!etsyConnected" @click="edConnectEtsy()" class="bg-accent hover:bg-accent-dark text-ink-900 font-bold text-sm px-4 py-2 rounded-lg transition">
+            <button x-show="!etsyConnected" @click="edConnectEtsy(etsyShopNameInput)" :disabled="!etsyShopNameInput.trim()"
+                    class="bg-accent hover:bg-accent-dark disabled:opacity-40 disabled:cursor-not-allowed text-ink-900 font-bold text-sm px-4 py-2 rounded-lg transition">
               <i class="fa-solid fa-store mr-1.5"></i>Connecter ma boutique Etsy
             </button>
             <button x-show="etsyConnected" @click="edDisconnectEtsy()" class="border border-gray-200 hover:bg-gray-50 text-gray-600 font-semibold text-sm px-4 py-2 rounded-lg transition">
@@ -1747,6 +1760,7 @@ function app() {
     // Supabase locale n'est pas restaurée ou que le formulaire n'a pas validé.
     etsyConnected: false,
     currentUserEmail: null,
+    etsyShopNameInput: '',
 
     // ===== Commandes (Etsy — flux de fulfillment) =====
     // Statut brut = valeur de l'enum OrderStatus (backend/models.py) — le

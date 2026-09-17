@@ -87,16 +87,27 @@ ALTER TABLE profiles ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now
 -- Jamais exposée en lecture publique : contient un refresh_token valable
 -- plusieurs mois. user_id est la clé primaire car upsert() y est appelé
 -- sans on_conflict explicite (une seule boutique Etsy par compte EtsyDrop).
+-- shop_id/shop_name : GET /v3/application/users/{user_id}/shops renvoie 403
+-- au tier Etsy actuel de cette app (confirmé en prod), et shop_id n'est PAS
+-- dans la réponse du token exchange (vérifié contre la doc Etsy réelle).
+-- Résolu une fois à la connexion via l'endpoint public GET /shops/{shop_name}
+-- (même mécanisme que routers/shop_analyzer.py, pas soumis aux restrictions
+-- de tier OAuth) à partir du nom de boutique saisi par l'utilisateur, puis
+-- stocké ici pour ne plus jamais avoir à le résoudre.
 CREATE TABLE IF NOT EXISTS etsy_tokens (
   user_id UUID REFERENCES auth.users(id) PRIMARY KEY,
   access_token TEXT NOT NULL,
   refresh_token TEXT NOT NULL,
   expires_in INTEGER,
+  shop_id BIGINT,
+  shop_name TEXT,
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 ALTER TABLE etsy_tokens ADD COLUMN IF NOT EXISTS access_token TEXT DEFAULT '';
 ALTER TABLE etsy_tokens ADD COLUMN IF NOT EXISTS refresh_token TEXT DEFAULT '';
 ALTER TABLE etsy_tokens ADD COLUMN IF NOT EXISTS expires_in INTEGER;
+ALTER TABLE etsy_tokens ADD COLUMN IF NOT EXISTS shop_id BIGINT;
+ALTER TABLE etsy_tokens ADD COLUMN IF NOT EXISTS shop_name TEXT;
 ALTER TABLE etsy_tokens ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
 
 -- === LISTINGS — fiches produit du catalogue ===

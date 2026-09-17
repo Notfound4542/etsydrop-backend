@@ -22,13 +22,14 @@ import hashlib
 import logging
 import os
 import secrets
+from typing import Optional
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 
 from database import get_current_user, get_supabase
-from etsy_client import etsy_get, etsy_shop_id_from_token
+from etsy_client import etsy_get
 from models import CurrentUser, EtsyOAuthCallback, EtsyOAuthLoginResponse
 
 router = APIRouter()
@@ -74,17 +75,26 @@ def _generate_pkce_pair() -> tuple[str, str]:
 
 # === DÉMARRAGE DU FLOW OAUTH ETSY ===
 @router.get("/etsy/login", response_model=EtsyOAuthLoginResponse)
-async def etsy_login(user: CurrentUser = Depends(get_current_user)):
+async def etsy_login(
+    shop_name: str = Query(..., min_length=1, max_length=80, description="Nom exact de la boutique Etsy à connecter"),
+    user: CurrentUser = Depends(get_current_user),
+):
     """
     Génère l'URL d'autorisation Etsy (avec PKCE) vers laquelle le frontend
     doit rediriger l'utilisateur déjà connecté à EtsyDrop (via Supabase Auth).
+
+    shop_name est demandé ici, avant même de partir sur Etsy : GET
+    /users/{user_id}/shops (qui aurait permis de le déduire automatiquement
+    après coup) renvoie 403 au tier Etsy actuel de cette app. Le nom saisi
+    permet de résoudre shop_id après coup via l'endpoint public
+    /shops/{shop_name} — voir etsy_callback.
     """
     if not ETSY_API_KEY:
         raise HTTPException(status_code=500, detail="Configuration Etsy manquante côté serveur.")
 
     code_verifier, code_challenge = _generate_pkce_pair()
     state = secrets.token_urlsafe(24)
-    _pkce_store[state] = {"code_verifier": code_verifier, "user_id": user.id}
+    _pkce_store[state] = {"code_verifier": code_verifier, "user_id": user.id, "shop_name": shop_name}
 
     params = {
         "response_type": "code",
@@ -99,8 +109,26 @@ async def etsy_login(user: CurrentUser = Depends(get_current_user)):
     return EtsyOAuthLoginResponse(authorize_url=authorize_url, state=state)
 
 
+# === RÉSOLUTION DU SHOP_ID (endpoint public, pas soumis au tier OAuth) ===
+async def _resolve_shop_id(shop_name: str) -> Optional[int]:
+    """
+    GET /shops/{shop_name} est un endpoint public (x-api-key seulement,
+    même mécanisme que routers/shop_analyzer.py) — contrairement à
+    GET /users/{user_id}/shops, il n'est pas bloqué par le tier Etsy actuel
+    de cette app (confirmé 403 en prod). Retourne None sans lever si la
+    boutique n'est pas trouvée : la connexion ne doit pas échouer pour ça,
+    seule la sync des fiches/du CA sera indisponible.
+    """
+    try:
+        shop = await etsy_get(f"/shops/{shop_name}")
+        return shop.get("shop_id") if isinstance(shop, dict) else None
+    except Exception as exc:
+        logger.warning("Résolution shop_id échouée pour shop_name=%s : %s", shop_name, type(exc).__name__)
+        return None
+
+
 # === IMPORT INITIAL DES FICHES DE LA BOUTIQUE (déclenché juste après connexion) ===
-async def _sync_etsy_listings(user_id: str, access_token: str) -> int:
+async def _sync_etsy_listings(user_id: str, access_token: str, shop_id: Optional[int]) -> int:
     """
     Importe les fiches actives de la boutique Etsy connectée dans la table
     `listings`, pour que le Catalogue affiche autre chose qu'une table vide
@@ -109,17 +137,15 @@ async def _sync_etsy_listings(user_id: str, access_token: str) -> int:
     met à jour les fiches déjà importées au lieu de les dupliquer.
 
     Ne doit JAMAIS faire échouer le callback OAuth : le token doit être
-    sauvegardé et l'utilisateur redirigé même si cet import échoue (boutique
-    vide, rate limit Etsy, etc.) — toute erreur est donc loguée et avalée.
+    sauvegardé et l'utilisateur redirigé même si cet import échoue (shop_id
+    non résolu, boutique vide, rate limit Etsy, etc.) — toute erreur est
+    donc loguée et avalée.
     """
-    try:
-        etsy_user_id = etsy_shop_id_from_token(access_token)
-        shop = await etsy_get(f"/users/{etsy_user_id}/shops", access_token=access_token)
-        shop_id = shop.get("shop_id") if isinstance(shop, dict) else None
-        if not shop_id:
-            logger.warning("Sync listings Etsy : boutique introuvable pour user_id=%s.", user_id)
-            return 0
+    if not shop_id:
+        logger.warning("Sync listings Etsy ignorée pour user_id=%s : shop_id non résolu.", user_id)
+        return 0
 
+    try:
         payload = await etsy_get(
             f"/shops/{shop_id}/listings/active", access_token=access_token, params={"limit": 100}
         )
@@ -230,6 +256,13 @@ async def etsy_callback(
         return RedirectResponse(f"{FRONTEND_URL}/?etsy_error=token_exchange_failed")
 
     tokens = response.json()
+    shop_name = entry.get("shop_name", "")
+    shop_id = await _resolve_shop_id(shop_name) if shop_name else None
+    if not shop_id:
+        logger.warning(
+            "shop_id non résolu pour user_id=%s (shop_name=%r) — le token est quand même sauvegardé.",
+            entry["user_id"], shop_name,
+        )
 
     supabase = get_supabase()
     supabase.table("etsy_tokens").upsert(
@@ -238,10 +271,12 @@ async def etsy_callback(
             "access_token": tokens["access_token"],
             "refresh_token": tokens["refresh_token"],
             "expires_in": tokens.get("expires_in"),
+            "shop_id": shop_id,
+            "shop_name": shop_name,
         }
     ).execute()
 
-    synced = await _sync_etsy_listings(entry["user_id"], tokens["access_token"])
+    synced = await _sync_etsy_listings(entry["user_id"], tokens["access_token"], shop_id)
     logger.info("Connexion Etsy réussie pour user_id=%s : %d fiches importées.", entry["user_id"], synced)
 
     return RedirectResponse(f"{FRONTEND_URL}/?etsy_connected=true")

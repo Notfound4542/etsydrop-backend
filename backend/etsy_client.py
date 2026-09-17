@@ -46,6 +46,29 @@ def etsy_shop_id_from_token(access_token: str) -> str:
     return access_token.split(".")[0]
 
 
+# === SHOP_ID DE LA BOUTIQUE CONNECTÉE ===
+# GET /v3/application/users/{user_id}/shops renvoie 403 au tier Etsy actuel
+# de cette app — shop_id est donc résolu une seule fois à la connexion (voir
+# routers/auth.py > etsy_callback, via l'endpoint public /shops/{shop_name})
+# et lu ici depuis la DB plutôt que re-résolu à chaque appel.
+def get_etsy_shop_id(user_id: str) -> int:
+    supabase = get_supabase()
+    result = (
+        supabase.table("etsy_tokens")
+        .select("shop_id")
+        .eq("user_id", user_id)
+        .maybe_single()
+        .execute()
+    )
+    shop_id = result.data.get("shop_id") if result.data else None
+    if not shop_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Shop Etsy non résolu — reconnecte ta boutique en indiquant son nom exact.",
+        )
+    return shop_id
+
+
 # === APPEL GET GÉNÉRIQUE VERS L'API ETSY V3 ===
 async def etsy_get(path: str, *, params: Optional[dict] = None, access_token: Optional[str] = None) -> Any:
     """

@@ -9,7 +9,7 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from database import get_current_user, get_supabase
-from etsy_client import etsy_get, etsy_shop_id_from_token, get_etsy_access_token
+from etsy_client import etsy_get, get_etsy_access_token, get_etsy_shop_id
 from models import (
     AnalyticsSummary,
     CurrentUser,
@@ -61,12 +61,10 @@ async def get_revenue(
     user: CurrentUser = Depends(get_current_user),
 ):
     access_token = get_etsy_access_token(user.id)
-    etsy_user_id = etsy_shop_id_from_token(access_token)
-
-    shop = await etsy_get(f"/users/{etsy_user_id}/shops", access_token=access_token)
-    shop_id = shop.get("shop_id") if isinstance(shop, dict) else None
-    if not shop_id:
-        raise HTTPException(status_code=404, detail="Boutique Etsy introuvable.")
+    # shop_id est résolu une fois à la connexion (voir routers/auth.py >
+    # etsy_callback) et lu ici depuis la DB : GET /users/{user_id}/shops
+    # renvoie 403 au tier Etsy actuel de cette app.
+    shop_id = get_etsy_shop_id(user.id)
 
     since = datetime.now(timezone.utc) - timedelta(days=_PERIOD_DAYS[period])
     receipts_payload = await etsy_get(
