@@ -1,3 +1,363 @@
+<script>
+/* ============================================================
+   EtsyDrop — Couche d'intégration API réelle
+   Backend: https://etsydrop-backend-production.up.railway.app
+   Auth: Supabase (wlqzhoixoxrtueldsqkv)
+   ============================================================ */
+(function () {
+  'use strict';
+
+  const BACKEND   = 'https://etsydrop-backend-production.up.railway.app';
+  const SB_URL    = 'https://wlqzhoixoxrtueldsqkv.supabase.co';
+  const SB_KEY    = 'sb_publishable_M-2zNvOpk644GMzrC_-k-g_kSR83Mun';
+
+  /* ---- Session ---- */
+  let _session = null;
+
+  function _saveSession(s) {
+    _session = s;
+    try { sessionStorage.setItem('ed_session', JSON.stringify(s)); } catch(e) {}
+  }
+
+  function _restoreSession() {
+    try {
+      const raw = sessionStorage.getItem('ed_session');
+      if (!raw) return;
+      const s = JSON.parse(raw);
+      if (s.expires_at && Date.now() / 1000 > s.expires_at - 60) {
+        sessionStorage.removeItem('ed_session');
+      } else {
+        _session = s;
+      }
+    } catch(e) {}
+  }
+
+  /* ---- Supabase auth ---- */
+  async function _sbFetch(path, opts = {}) {
+    const res = await fetch(SB_URL + path, {
+      ...opts,
+      headers: {
+        apikey: SB_KEY,
+        'Content-Type': 'application/json',
+        ...(opts.headers || {})
+      }
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(json.error_description || json.error_code || json.message || 'Supabase error ' + res.status);
+    return json;
+  }
+
+  async function signIn(email, password) {
+    const data = await _sbFetch('/auth/v1/token?grant_type=password', {
+      method: 'POST',
+      body: JSON.stringify({ email, password })
+    });
+    _saveSession(data);
+    return data;
+  }
+
+  async function signUp(email, password) {
+    const data = await _sbFetch('/auth/v1/signup', {
+      method: 'POST',
+      body: JSON.stringify({ email, password })
+    });
+    if (data.access_token) _saveSession(data);
+    return data;
+  }
+
+  async function signOut() {
+    if (_session?.access_token) {
+      await _sbFetch('/auth/v1/logout', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + _session.access_token }
+      }).catch(() => {});
+    }
+    _session = null;
+    try { sessionStorage.removeItem('ed_session'); } catch(e) {}
+  }
+
+  async function refreshToken() {
+    if (!_session?.refresh_token) return null;
+    try {
+      const data = await _sbFetch('/auth/v1/token?grant_type=refresh_token', {
+        method: 'POST',
+        body: JSON.stringify({ refresh_token: _session.refresh_token })
+      });
+      _saveSession(data);
+      return data;
+    } catch(e) { return null; }
+  }
+
+  /* ---- Backend API ---- */
+  async function api(path, opts = {}) {
+    // Refresh if close to expiry
+    if (_session?.expires_at && Date.now() / 1000 > _session.expires_at - 120) {
+      await refreshToken();
+    }
+    if (!_session?.access_token) throw new Error('Non authentifié');
+    const res = await fetch(BACKEND + path, {
+      ...opts,
+      headers: {
+        Authorization: 'Bearer ' + _session.access_token,
+        'Content-Type': 'application/json',
+        ...(opts.headers || {})
+      }
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'HTTP ' + res.status }));
+      throw new Error(err.detail || 'API error ' + res.status);
+    }
+    return res.json();
+  }
+
+  /* ---- Public API ---- */
+  window.EDAPI = {
+    get session() { return _session; },
+    get isLoggedIn() { return !!_session?.access_token; },
+    signIn, signUp, signOut, refreshToken, restoreSession: _restoreSession,
+
+    // Analytics
+    summary:    ()       => api('/api/analytics/summary'),
+    revenue:    (days)   => api('/api/analytics/revenue?days=' + (days || 30)),
+    margin:     ()       => api('/api/analytics/margin'),
+
+    // Listings
+    listings:   (p, n)   => api('/api/listings/?page=' + (p||1) + '&limit=' + (n||20)),
+    listing:    (id)     => api('/api/listings/' + id),
+
+    // Orders
+    orders:     (p, n)   => api('/api/orders/?page=' + (p||1) + '&limit=' + (n||20)),
+    order:      (id)     => api('/api/orders/' + id),
+    fulfill:    (id, d)  => api('/api/orders/' + id + '/fulfill', { method:'POST', body:JSON.stringify(d) }),
+
+    // Etsy OAuth
+    me:         ()       => api('/api/auth/me'),
+    etsyLogin:  ()       => api('/api/auth/etsy/login'),
+    etsyDisconnect: ()   => api('/api/auth/etsy/disconnect', { method:'DELETE' }),
+
+    // Keywords / SEO
+    keywords:   (q)      => api('/api/keywords/search?q=' + encodeURIComponent(q)),
+    keywordMkt: (q)      => api('/api/keywords/market-search?q=' + encodeURIComponent(q)),
+    keywordDtl: (kw)     => api('/api/keywords/' + encodeURIComponent(kw)),
+
+    // Sourcing
+    sourcingSearch:  (q) => api('/api/sourcing/search?q=' + encodeURIComponent(q)),
+    sourcingCompare: (id)=> api('/api/sourcing/compare?listing_id=' + id),
+
+    // Shop
+    analyzeShop: (url)   => api('/api/shop/analyze?shop_url=' + encodeURIComponent(url)),
+
+    // AI generation
+    genImage:   (d)      => api('/api/generate/image',   { method:'POST', body:JSON.stringify(d) }),
+    genListing: (d)      => api('/api/generate/listing', { method:'POST', body:JSON.stringify(d) }),
+
+    // Pricing
+    calcPrice:  (d)      => api('/api/pricing/calculate', { method:'POST', body:JSON.stringify(d) }),
+
+    // Promotion
+    pinterest:  (d)      => api('/api/promotion/pinterest/publish', { method:'POST', body:JSON.stringify(d) }),
+
+    // Ads
+    adsSync:    ()       => api('/api/ads/sync',      { method:'POST' }),
+    adsDash:    ()       => api('/api/ads/dashboard'),
+
+    // Billing
+    billingStatus:   ()  => api('/api/billing/status'),
+    billingCheckout: (d) => api('/api/billing/create-checkout', { method:'POST', body:JSON.stringify(d) }),
+
+    // Health
+    health: () => fetch(BACKEND + '/api/health').then(r=>r.json()),
+  };
+
+  /* ---- Login modal (injected into DOM) ---- */
+  function injectLoginModal() {
+    const modal = document.createElement('div');
+    modal.id = 'ed-auth-modal';
+    modal.setAttribute('x-data', '{ mode: "login", email: "", password: "", loading: false, error: "" }');
+    modal.innerHTML = `
+      <div class="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-sm" id="ed-auth-overlay">
+        <div class="bg-white dark:bg-ink-800 rounded-2xl shadow-2xl w-full max-w-md mx-4 p-8">
+          <div class="flex items-center gap-3 mb-6">
+            <div class="w-10 h-10 rounded-xl bg-accent flex items-center justify-center">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+            </div>
+            <div>
+              <h1 class="text-xl font-bold text-ink-900 dark:text-white">EtsyDrop</h1>
+              <p class="text-xs text-gray-400">Dropshipping intelligent pour Etsy</p>
+            </div>
+          </div>
+          <div id="ed-login-form">
+            <h2 class="text-lg font-semibold text-ink-900 dark:text-white mb-1" id="ed-auth-title">Connexion</h2>
+            <p class="text-sm text-gray-500 mb-5" id="ed-auth-sub">Connectez-vous pour accéder à votre tableau de bord</p>
+            <div id="ed-auth-error" class="hidden mb-3 p-3 rounded-lg bg-red-50 text-red-700 text-sm"></div>
+            <div class="space-y-3">
+              <div>
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Email</label>
+                <input type="email" id="ed-email" class="w-full px-3 py-2.5 rounded-lg border border-gray-200 dark:border-ink-600 dark:bg-ink-700 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-accent" placeholder="vous@exemple.com">
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Mot de passe</label>
+                <input type="password" id="ed-password" class="w-full px-3 py-2.5 rounded-lg border border-gray-200 dark:border-ink-600 dark:bg-ink-700 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-accent" placeholder="••••••••">
+              </div>
+              <button id="ed-submit-btn" onclick="window._edAuthSubmit()" class="w-full py-2.5 px-4 bg-accent hover:bg-accent-dark text-white font-semibold rounded-lg text-sm transition-colors">
+                Se connecter
+              </button>
+            </div>
+            <p class="mt-4 text-center text-sm text-gray-500">
+              <span id="ed-toggle-text">Pas encore de compte ?</span>
+              <button id="ed-toggle-btn" onclick="window._edToggleMode()" class="text-accent font-medium hover:underline ml-1">S'inscrire</button>
+            </p>
+          </div>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+  }
+
+  window._edAuthMode = 'login';
+  window._edToggleMode = function() {
+    window._edAuthMode = window._edAuthMode === 'login' ? 'signup' : 'login';
+    const isLogin = window._edAuthMode === 'login';
+    document.getElementById('ed-auth-title').textContent = isLogin ? 'Connexion' : 'Créer un compte';
+    document.getElementById('ed-auth-sub').textContent = isLogin
+      ? 'Connectez-vous pour accéder à votre tableau de bord'
+      : 'Créez votre compte EtsyDrop gratuitement';
+    document.getElementById('ed-submit-btn').textContent = isLogin ? 'Se connecter' : 'Créer un compte';
+    document.getElementById('ed-toggle-text').textContent = isLogin ? 'Pas encore de compte ?' : 'Déjà un compte ?';
+    document.getElementById('ed-toggle-btn').textContent = isLogin ? "S'inscrire" : 'Se connecter';
+  };
+
+  window._edAuthSubmit = async function() {
+    const email = document.getElementById('ed-email').value.trim();
+    const password = document.getElementById('ed-password').value;
+    const btn = document.getElementById('ed-submit-btn');
+    const errEl = document.getElementById('ed-auth-error');
+    if (!email || !password) { errEl.textContent = 'Remplissez tous les champs.'; errEl.classList.remove('hidden'); return; }
+    btn.disabled = true;
+    btn.textContent = 'Chargement…';
+    errEl.classList.add('hidden');
+    try {
+      if (window._edAuthMode === 'login') {
+        await window.EDAPI.signIn(email, password);
+      } else {
+        const res = await window.EDAPI.signUp(email, password);
+        if (!res.access_token) {
+          errEl.textContent = 'Vérifiez votre email pour confirmer votre inscription.';
+          errEl.classList.remove('hidden');
+          btn.disabled = false;
+          btn.textContent = 'Créer un compte';
+          return;
+        }
+      }
+      // Success: remove modal and init app
+      document.getElementById('ed-auth-modal').remove();
+      await window._edPostAuth();
+    } catch(e) {
+      errEl.textContent = e.message || 'Erreur. Réessayez.';
+      errEl.classList.remove('hidden');
+      btn.disabled = false;
+      btn.textContent = window._edAuthMode === 'login' ? 'Se connecter' : 'Créer un compte';
+    }
+  };
+
+  /* ---- Post-auth: load real data into Alpine state ---- */
+  window._edPostAuth = async function() {
+    // Get the Alpine component on the root
+    const rootEl = document.querySelector('[x-data]');
+    if (!rootEl) return;
+    const state = window.Alpine?.evaluate(rootEl, '$data') || rootEl?._x_dataStack?.[0];
+    if (!state) return;
+
+    try {
+      // Etsy connection info
+      const me = await window.EDAPI.me().catch(() => null);
+      if (me) {
+        state.etsyConnected = !!me.etsy_connected;
+        if (me.etsy_shop_name) state.shopName = me.etsy_shop_name;
+      }
+
+      // Analytics summary
+      const summary = await window.EDAPI.summary().catch(() => null);
+      if (summary) {
+        if (summary.total_revenue !== undefined) state.revenue = summary.total_revenue;
+        if (summary.total_orders !== undefined)  state.orders  = summary.total_orders;
+        if (summary.average_margin !== undefined) state.margin = summary.average_margin;
+      }
+
+      // Listings
+      const lstResp = await window.EDAPI.listings(1, 20).catch(() => null);
+      if (lstResp?.items?.length) {
+        state.products = lstResp.items.map(l => ({
+          id:      l.listing_id,
+          name:    l.title || 'Produit sans titre',
+          price:   l.price ? (l.price.amount / l.price.divisor) : 0,
+          stock:   l.quantity || 0,
+          status:  l.state === 'active' ? 'Actif' : 'Inactif',
+          orders:  0,
+          margin:  0,
+          img:     l.images?.[0]?.url_75x75 || ''
+        }));
+      }
+
+      // Orders
+      const ordResp = await window.EDAPI.orders(1, 20).catch(() => null);
+      if (ordResp?.items?.length) {
+        state.recentOrders = ordResp.items.slice(0, 10).map(o => ({
+          id:       '#' + o.receipt_id,
+          customer: o.name || o.buyer_name || 'Client',
+          product:  o.transactions?.[0]?.title || 'Commande',
+          amount:   o.total_price ? (parseFloat(o.total_price.amount) / o.total_price.divisor) : 0,
+          status:   o.status || 'pending',
+          date:     o.created_timestamp
+            ? new Date(o.created_timestamp * 1000).toLocaleDateString('fr-FR')
+            : ''
+        }));
+      }
+    } catch(e) {
+      console.warn('[EtsyDrop] Erreur chargement données:', e);
+    }
+  };
+
+  /* ---- Bootstrap ---- */
+  document.addEventListener('DOMContentLoaded', function () {
+    _restoreSession();
+
+    if (window.EDAPI.isLoggedIn) {
+      // Already authenticated — load data after Alpine initializes
+      document.addEventListener('alpine:initialized', () => {
+        window._edPostAuth();
+      }, { once: true });
+    } else {
+      // Show login modal
+      injectLoginModal();
+    }
+
+    // Handle Etsy OAuth callback
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('code') || params.get('etsy_connected')) {
+      // Backend handles the callback and redirects here
+      setTimeout(() => window._edPostAuth(), 1000);
+    }
+  });
+
+  /* ---- Expose connect-Etsy helper on window ---- */
+  window.edConnectEtsy = async function() {
+    try {
+      const data = await window.EDAPI.etsyLogin();
+      if (data.auth_url) window.location.href = data.auth_url;
+    } catch(e) {
+      alert('Erreur Etsy: ' + e.message);
+    }
+  };
+
+  window.edLogout = async function() {
+    await window.EDAPI.signOut();
+    window.location.reload();
+  };
+
+})();
+</script>
+
 <!DOCTYPE html>
 <html lang="fr">
 <head>
