@@ -68,7 +68,16 @@ async def etsy_get(path: str, *, params: Optional[dict] = None, access_token: Op
             response = await client.get(url, headers=headers, params=params)
 
     if response.status_code != 200:
-        logger.warning("Etsy API %s a répondu %s", path, response.status_code)
+        # Etsy renvoie généralement un corps JSON expliquant le rejet (scope
+        # manquant, tier d'app insuffisant, etc.) — sans ce détail, un 403/404
+        # générique de leur côté est indiscernable d'un autre depuis nos logs.
+        # Jamais renvoyé au client (juste loggé) : voir la règle CLAUDE.md sur
+        # ne pas exposer les réponses d'API tierces telles quelles.
+        try:
+            error_body = response.text[:500]
+        except Exception:
+            error_body = "<illisible>"
+        logger.warning("Etsy API %s a répondu %s : %s", path, response.status_code, error_body)
         raise HTTPException(status_code=502, detail="Échec de la requête vers l'API Etsy.")
 
     return response.json()
