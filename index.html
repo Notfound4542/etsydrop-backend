@@ -1,8 +1,19 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
 <script>
 /* ============================================================
    EtsyDrop — Couche d'intégration API réelle
    Backend: https://etsydrop-backend-production.up.railway.app
    Auth: Supabase (wlqzhoixoxrtueldsqkv)
+
+   Corrections apportées au script d'origine (commit "Add EtsyDrop API
+   integration script") : plusieurs endpoints étaient appelés avec la
+   mauvaise méthode HTTP ou les mauvais noms de champs/paramètres par
+   rapport aux routers FastAPI réels (backend/routers/*.py), et les
+   données chargées étaient écrites sur des propriétés Alpine qui
+   n'existaient dans aucun template (donc jamais affichées).
    ============================================================ */
 (function () {
   'use strict';
@@ -90,7 +101,6 @@
 
   /* ---- Backend API ---- */
   async function api(path, opts = {}) {
-    // Refresh if close to expiry
     if (_session?.expires_at && Date.now() / 1000 > _session.expires_at - 120) {
       await refreshToken();
     }
@@ -110,102 +120,109 @@
     return res.json();
   }
 
-  /* ---- Public API ---- */
+  /* ---- Public API ----
+     Chemins/méthodes/paramètres alignés sur les signatures réelles des
+     routers FastAPI. Listings et Orders n'ont PAS de pagination côté API
+     et renvoient un tableau JSON brut (pas de wrapper {items:[...]}).
+     Sourcing/search et Shop/analyze sont en POST avec un body JSON. */
   window.EDAPI = {
     get session() { return _session; },
     get isLoggedIn() { return !!_session?.access_token; },
     signIn, signUp, signOut, refreshToken, restoreSession: _restoreSession,
 
     // Analytics
-    summary:    ()       => api('/api/analytics/summary'),
-    revenue:    (days)   => api('/api/analytics/revenue?days=' + (days || 30)),
-    margin:     ()       => api('/api/analytics/margin'),
+    summary:    ()             => api('/api/analytics/summary'),
+    revenue:    (period)       => api('/api/analytics/revenue?period=' + (period || '30d')),
+    margin:     (params)       => api('/api/analytics/margin?' + new URLSearchParams(params).toString()),
 
     // Listings
-    listings:   (p, n)   => api('/api/listings/?page=' + (p||1) + '&limit=' + (n||20)),
-    listing:    (id)     => api('/api/listings/' + id),
+    listings:   (stockStatus)  => api('/api/listings/' + (stockStatus ? '?stock_status=' + stockStatus : '')),
+    listing:    (id)           => api('/api/listings/' + id),
 
     // Orders
-    orders:     (p, n)   => api('/api/orders/?page=' + (p||1) + '&limit=' + (n||20)),
-    order:      (id)     => api('/api/orders/' + id),
-    fulfill:    (id, d)  => api('/api/orders/' + id + '/fulfill', { method:'POST', body:JSON.stringify(d) }),
+    orders:     ()             => api('/api/orders/'),
+    order:      (id)           => api('/api/orders/' + id),
+    fulfill:    (id, d)        => api('/api/orders/' + id + '/fulfill', { method:'POST', body:JSON.stringify(d) }),
 
     // Etsy OAuth
-    me:         ()       => api('/api/auth/me'),
-    etsyLogin:  ()       => api('/api/auth/etsy/login'),
-    etsyDisconnect: ()   => api('/api/auth/etsy/disconnect', { method:'DELETE' }),
+    me:             ()  => api('/api/auth/me'),
+    etsyLogin:      ()  => api('/api/auth/etsy/login'),
+    etsyDisconnect: ()  => api('/api/auth/etsy/disconnect', { method:'DELETE' }),
 
     // Keywords / SEO
-    keywords:   (q)      => api('/api/keywords/search?q=' + encodeURIComponent(q)),
-    keywordMkt: (q)      => api('/api/keywords/market-search?q=' + encodeURIComponent(q)),
-    keywordDtl: (kw)     => api('/api/keywords/' + encodeURIComponent(kw)),
+    keywords:   (q)            => api('/api/keywords/search?q=' + encodeURIComponent(q)),
+    keywordMkt: (q, market)    => api('/api/keywords/market-search?q=' + encodeURIComponent(q) + (market ? '&market=' + market : '')),
+    keywordDtl: (kw)           => api('/api/keywords/' + encodeURIComponent(kw)),
 
     // Sourcing
-    sourcingSearch:  (q) => api('/api/sourcing/search?q=' + encodeURIComponent(q)),
-    sourcingCompare: (id)=> api('/api/sourcing/compare?listing_id=' + id),
+    sourcingSearch:  (query, countryCode) => api('/api/sourcing/search', { method:'POST', body: JSON.stringify({ query, country_code: countryCode }) }),
+    sourcingCompare: (q)                  => api('/api/sourcing/compare?q=' + encodeURIComponent(q)),
 
-    // Shop
-    analyzeShop: (url)   => api('/api/shop/analyze?shop_url=' + encodeURIComponent(url)),
+    // Shop analyzer
+    analyzeShop: (shopName)    => api('/api/shop/analyze', { method:'POST', body: JSON.stringify({ shop_name: shopName }) }),
 
     // AI generation
-    genImage:   (d)      => api('/api/generate/image',   { method:'POST', body:JSON.stringify(d) }),
-    genListing: (d)      => api('/api/generate/listing', { method:'POST', body:JSON.stringify(d) }),
+    genImage:   (d)            => api('/api/generate/image',   { method:'POST', body:JSON.stringify(d) }),
+    genListing: (d)            => api('/api/generate/listing', { method:'POST', body:JSON.stringify(d) }),
 
     // Pricing
-    calcPrice:  (d)      => api('/api/pricing/calculate', { method:'POST', body:JSON.stringify(d) }),
+    calcPrice:  (d)            => api('/api/pricing/calculate', { method:'POST', body:JSON.stringify(d) }),
 
     // Promotion
-    pinterest:  (d)      => api('/api/promotion/pinterest/publish', { method:'POST', body:JSON.stringify(d) }),
+    pinterest:  (d)            => api('/api/promotion/pinterest/publish', { method:'POST', body:JSON.stringify(d) }),
 
     // Ads
-    adsSync:    ()       => api('/api/ads/sync',      { method:'POST' }),
-    adsDash:    ()       => api('/api/ads/dashboard'),
+    adsSync:    (d)            => api('/api/ads/sync', { method:'POST', body: JSON.stringify(d) }),
+    adsDash:    ()             => api('/api/ads/dashboard'),
 
     // Billing
-    billingStatus:   ()  => api('/api/billing/status'),
-    billingCheckout: (d) => api('/api/billing/create-checkout', { method:'POST', body:JSON.stringify(d) }),
+    billingStatus:   ()        => api('/api/billing/status'),
+    billingCheckout: (d)       => api('/api/billing/create-checkout', { method:'POST', body:JSON.stringify(d) }),
 
     // Health
-    health: () => fetch(BACKEND + '/api/health').then(r=>r.json()),
+    health: () => fetch(BACKEND + '/api/health').then(r => r.json()),
   };
 
-  /* ---- Login modal (injected into DOM) ---- */
+  /* ---- Login modal (injecté dans le DOM) ----
+     Volontairement sans classes Tailwind dark: — le site gère le dark mode
+     via des overrides .dark X sur les classes de base (voir <style> plus
+     bas), donc bg-white/text-ink-900/input sont déjà stylés correctement
+     dans les deux thèmes sans rien ajouter ici. */
   function injectLoginModal() {
     const modal = document.createElement('div');
     modal.id = 'ed-auth-modal';
-    modal.setAttribute('x-data', '{ mode: "login", email: "", password: "", loading: false, error: "" }');
     modal.innerHTML = `
       <div class="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-sm" id="ed-auth-overlay">
-        <div class="bg-white dark:bg-ink-800 rounded-2xl shadow-2xl w-full max-w-md mx-4 p-8">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 p-8">
           <div class="flex items-center gap-3 mb-6">
             <div class="w-10 h-10 rounded-xl bg-accent flex items-center justify-center">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
             </div>
             <div>
-              <h1 class="text-xl font-bold text-ink-900 dark:text-white">EtsyDrop</h1>
+              <h1 class="text-xl font-bold text-ink-900">EtsyDrop</h1>
               <p class="text-xs text-gray-400">Dropshipping intelligent pour Etsy</p>
             </div>
           </div>
           <div id="ed-login-form">
-            <h2 class="text-lg font-semibold text-ink-900 dark:text-white mb-1" id="ed-auth-title">Connexion</h2>
+            <h2 class="text-lg font-semibold text-ink-900 mb-1" id="ed-auth-title">Connexion</h2>
             <p class="text-sm text-gray-500 mb-5" id="ed-auth-sub">Connectez-vous pour accéder à votre tableau de bord</p>
-            <div id="ed-auth-error" class="hidden mb-3 p-3 rounded-lg bg-red-50 text-red-700 text-sm"></div>
+            <div id="ed-auth-error" class="hidden mb-3 p-3 rounded-lg bg-rose-50 text-rose-600 text-sm"></div>
             <div class="space-y-3">
               <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Email</label>
-                <input type="email" id="ed-email" class="w-full px-3 py-2.5 rounded-lg border border-gray-200 dark:border-ink-600 dark:bg-ink-700 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-accent" placeholder="vous@exemple.com">
+                <label class="block text-sm font-medium text-gray-700 mb-1">Email</label>
+                <input type="email" id="ed-email" class="w-full px-3 py-2.5 rounded-lg border border-gray-200 text-sm outline-none focus:border-accent" placeholder="vous@exemple.com">
               </div>
               <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Mot de passe</label>
-                <input type="password" id="ed-password" class="w-full px-3 py-2.5 rounded-lg border border-gray-200 dark:border-ink-600 dark:bg-ink-700 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-accent" placeholder="••••••••">
+                <label class="block text-sm font-medium text-gray-700 mb-1">Mot de passe</label>
+                <input type="password" id="ed-password" class="w-full px-3 py-2.5 rounded-lg border border-gray-200 text-sm outline-none focus:border-accent" placeholder="••••••••">
               </div>
-              <button id="ed-submit-btn" onclick="window._edAuthSubmit()" class="w-full py-2.5 px-4 bg-accent hover:bg-accent-dark text-white font-semibold rounded-lg text-sm transition-colors">
+              <button id="ed-submit-btn" onclick="window._edAuthSubmit()" class="w-full py-2.5 px-4 bg-accent hover:bg-accent-dark text-ink-900 font-bold rounded-lg text-sm transition-colors">
                 Se connecter
               </button>
             </div>
             <p class="mt-4 text-center text-sm text-gray-500">
               <span id="ed-toggle-text">Pas encore de compte ?</span>
-              <button id="ed-toggle-btn" onclick="window._edToggleMode()" class="text-accent font-medium hover:underline ml-1">S'inscrire</button>
+              <button id="ed-toggle-btn" onclick="window._edToggleMode()" class="text-accent font-semibold hover:underline ml-1">S'inscrire</button>
             </p>
           </div>
         </div>
@@ -249,7 +266,6 @@
           return;
         }
       }
-      // Success: remove modal and init app
       document.getElementById('ed-auth-modal').remove();
       await window._edPostAuth();
     } catch(e) {
@@ -260,58 +276,80 @@
     }
   };
 
-  /* ---- Post-auth: load real data into Alpine state ---- */
+  /* ---- Mappe une fiche produit backend (models.Listing) vers la forme
+     attendue par catalogProducts (voir app() > Catalogue). Le backend ne
+     fournit ni images ni comparatif fournisseurs : on utilise des visuels
+     de substitution et un tableau suppliers vide plutôt que d'inventer des
+     données. ---- */
+  const STOCK_LABELS = { available: 'disponible', low_stock: 'stock_faible', out_of_stock: 'rupture' };
+  const SUPPLIER_LABELS = {
+    my_catalog: 'Mon catalogue', eprolo: 'Eprolo', cj_dropshipping: 'CJ Dropshipping',
+    printify: 'Printify', printful: 'Printful', zendrop: 'Zendrop', aliexpress: 'AliExpress'
+  };
+  function _mapListing(l) {
+    return {
+      id: l.id,
+      name: l.name,
+      image: 'https://picsum.photos/seed/' + encodeURIComponent(l.id) + '/400/400',
+      images: [0, 1, 2, 3, 4, 5].map(i => 'https://picsum.photos/seed/' + encodeURIComponent(l.id) + i + '/700/700'),
+      variantsCount: (l.variants || []).length,
+      priceMin: l.price_min,
+      priceMax: l.price_max,
+      margin: Math.round(l.margin_pct),
+      stock: STOCK_LABELS[l.stock_status] || 'disponible',
+      supplier: SUPPLIER_LABELS[l.supplier] || l.supplier,
+      baseCost: (l.variants && l.variants[0]) ? l.variants[0].supplier_price : 0,
+      freeShipping: false,
+      description: l.description,
+      tags: l.tags || [],
+      variants: (l.variants || []).map(v => ({ color: v.color, size: v.size, engraving: v.engraving, supplierPrice: v.supplier_price })),
+      suppliers: []
+    };
+  }
+
+  /* ---- Mappe une commande backend (models.Order) vers la forme attendue
+     par le tableau Commandes (voir orders + orderStatusMeta() dans app()).
+     `status` reste la valeur brute de l'enum OrderStatus : c'est
+     orderStatusMeta() côté template qui la traduit en libellé/couleur. ---- */
+  function _mapOrder(o) {
+    return {
+      id: '#' + o.etsy_order_id,
+      customer: o.customer_name,
+      product: o.product_name,
+      supplier: SUPPLIER_LABELS[o.supplier] || o.supplier,
+      amount: o.amount,
+      status: o.status,
+      tracking: o.tracking_number || '—'
+    };
+  }
+
+  /* ---- Post-auth : charge les vraies données dans l'état Alpine ---- */
   window._edPostAuth = async function() {
-    // Get the Alpine component on the root
     const rootEl = document.querySelector('[x-data]');
-    if (!rootEl) return;
-    const state = window.Alpine?.evaluate(rootEl, '$data') || rootEl?._x_dataStack?.[0];
+    if (!rootEl || !window.Alpine) return;
+    const state = window.Alpine.$data(rootEl);
     if (!state) return;
 
+    state.currentUserEmail = _session?.user?.email || null;
+
     try {
-      // Etsy connection info
       const me = await window.EDAPI.me().catch(() => null);
-      if (me) {
-        state.etsyConnected = !!me.etsy_connected;
-        if (me.etsy_shop_name) state.shopName = me.etsy_shop_name;
-      }
+      if (me) state.etsyConnected = !!me.etsy_shop_connected;
 
-      // Analytics summary
       const summary = await window.EDAPI.summary().catch(() => null);
-      if (summary) {
-        if (summary.total_revenue !== undefined) state.revenue = summary.total_revenue;
-        if (summary.total_orders !== undefined)  state.orders  = summary.total_orders;
-        if (summary.average_margin !== undefined) state.margin = summary.average_margin;
+      if (summary && summary.revenue_total) {
+        state.revenueTotal = summary.revenue_total;
+        state.revenueDisplay = summary.revenue_total;
       }
 
-      // Listings
-      const lstResp = await window.EDAPI.listings(1, 20).catch(() => null);
-      if (lstResp?.items?.length) {
-        state.products = lstResp.items.map(l => ({
-          id:      l.listing_id,
-          name:    l.title || 'Produit sans titre',
-          price:   l.price ? (l.price.amount / l.price.divisor) : 0,
-          stock:   l.quantity || 0,
-          status:  l.state === 'active' ? 'Actif' : 'Inactif',
-          orders:  0,
-          margin:  0,
-          img:     l.images?.[0]?.url_75x75 || ''
-        }));
+      const listings = await window.EDAPI.listings().catch(() => null);
+      if (Array.isArray(listings) && listings.length) {
+        state.catalogProducts = listings.map(_mapListing);
       }
 
-      // Orders
-      const ordResp = await window.EDAPI.orders(1, 20).catch(() => null);
-      if (ordResp?.items?.length) {
-        state.recentOrders = ordResp.items.slice(0, 10).map(o => ({
-          id:       '#' + o.receipt_id,
-          customer: o.name || o.buyer_name || 'Client',
-          product:  o.transactions?.[0]?.title || 'Commande',
-          amount:   o.total_price ? (parseFloat(o.total_price.amount) / o.total_price.divisor) : 0,
-          status:   o.status || 'pending',
-          date:     o.created_timestamp
-            ? new Date(o.created_timestamp * 1000).toLocaleDateString('fr-FR')
-            : ''
-        }));
+      const orders = await window.EDAPI.orders().catch(() => null);
+      if (Array.isArray(orders) && orders.length) {
+        state.orders = orders.map(_mapOrder);
       }
     } catch(e) {
       console.warn('[EtsyDrop] Erreur chargement données:', e);
@@ -323,30 +361,39 @@
     _restoreSession();
 
     if (window.EDAPI.isLoggedIn) {
-      // Already authenticated — load data after Alpine initializes
-      document.addEventListener('alpine:initialized', () => {
-        window._edPostAuth();
-      }, { once: true });
+      document.addEventListener('alpine:initialized', () => window._edPostAuth(), { once: true });
     } else {
-      // Show login modal
       injectLoginModal();
     }
 
-    // Handle Etsy OAuth callback
+    // Etsy redirige ici avec ?etsy_connected=true ou ?etsy_error=... une fois
+    // l'échange terminé côté backend (voir routers/auth.py > /etsy/callback).
     const params = new URLSearchParams(window.location.search);
-    if (params.get('code') || params.get('etsy_connected')) {
-      // Backend handles the callback and redirects here
-      setTimeout(() => window._edPostAuth(), 1000);
+    if ((params.get('etsy_connected') || params.get('etsy_error')) && window.EDAPI.isLoggedIn) {
+      document.addEventListener('alpine:initialized', () => window._edPostAuth(), { once: true });
+      setTimeout(() => window._edPostAuth(), 500);
+    }
+    if (params.get('etsy_connected') || params.get('etsy_error')) {
+      window.history.replaceState({}, '', window.location.pathname);
     }
   });
 
-  /* ---- Expose connect-Etsy helper on window ---- */
+  /* ---- Helpers exposés aux boutons du template ---- */
   window.edConnectEtsy = async function() {
     try {
       const data = await window.EDAPI.etsyLogin();
-      if (data.auth_url) window.location.href = data.auth_url;
+      if (data.authorize_url) window.location.href = data.authorize_url;
     } catch(e) {
-      alert('Erreur Etsy: ' + e.message);
+      alert('Erreur Etsy : ' + e.message);
+    }
+  };
+
+  window.edDisconnectEtsy = async function() {
+    try {
+      await window.EDAPI.etsyDisconnect();
+      await window._edPostAuth();
+    } catch(e) {
+      alert('Erreur Etsy : ' + e.message);
     }
   };
 
@@ -357,11 +404,6 @@
 
 })();
 </script>
-
-<!DOCTYPE html>
-<html lang="fr">
-<head>
-<meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>EtsyDrop — Tableau de bord</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2222%22 fill=%22%2300C896%22/><text x=%2250%22 y=%2268%22 font-size=%2258%22 text-anchor=%22middle%22 fill=%22white%22 font-family=%22Arial%22 font-weight=%22bold%22>E</text></svg>">
@@ -1029,13 +1071,17 @@
               <th class="pb-2 font-semibold">Commande</th><th class="pb-2 font-semibold">Client</th><th class="pb-2 font-semibold">Produit</th><th class="pb-2 font-semibold">Fournisseur</th><th class="pb-2 font-semibold">Montant</th><th class="pb-2 font-semibold">Statut</th><th class="pb-2 font-semibold">Suivi</th>
             </tr></thead>
             <tbody class="divide-y divide-gray-50">
-              <tr><td class="py-3 font-medium">#EY-88213</td><td>Claire M.</td><td>Collier prénom "Emma"</td><td>Mon catalogue</td><td class="font-semibold">24,90 €</td><td><span class="tag-pill bg-accent-light text-accent-dark">Livrée</span></td><td class="text-gray-400 font-mono text-xs">FR..8823JT</td></tr>
-              <tr><td class="py-3 font-medium">#EY-88214</td><td>Julien P.</td><td>Bracelet initiales "J&amp;L"</td><td>Mon catalogue</td><td class="font-semibold">18,90 €</td><td><span class="tag-pill bg-blue-50 text-blue-600">En transit</span></td><td class="text-gray-400 font-mono text-xs">FR..2291KX</td></tr>
-              <tr><td class="py-3 font-medium">#EY-88215</td><td>Sarah T.</td><td>Bague prénom ajustable</td><td>CJ Dropshipping</td><td class="font-semibold">20,40 €</td><td><span class="tag-pill bg-amber-100 text-amber-700">En attente fournisseur</span></td><td class="text-gray-400 font-mono text-xs">—</td></tr>
-              <tr class="bg-rose-50/40"><td class="py-3 font-medium">#EY-88190</td><td>Marc D.</td><td>Chaîne de cheville gravée</td><td>CJ Dropshipping</td><td class="font-semibold">17,90 €</td><td><span class="tag-pill bg-rose-100 text-rose-600">Retard 14j</span></td><td class="text-gray-400 font-mono text-xs">CN..7745QP</td></tr>
-              <tr><td class="py-3 font-medium">#EY-88216</td><td>Léa B.</td><td>Mug personnalisé prénom</td><td>Printify</td><td class="font-semibold">19,90 €</td><td><span class="tag-pill bg-accent-light text-accent-dark">Livrée</span></td><td class="text-gray-400 font-mono text-xs">FR..9013MZ</td></tr>
-              <tr><td class="py-3 font-medium">#EY-88217</td><td>Thomas R.</td><td>Boucles d'oreilles constellation</td><td>Mon catalogue</td><td class="font-semibold">21,90 €</td><td><span class="tag-pill bg-blue-50 text-blue-600">En transit</span></td><td class="text-gray-400 font-mono text-xs">FR..4471AL</td></tr>
-              <tr class="bg-purple-50/40"><td class="py-3 font-medium">#EY-88180</td><td>Inès K.</td><td>Collier zodiaque "Lion"</td><td>Eprolo</td><td class="font-semibold">22,90 €</td><td><span class="tag-pill bg-purple-100 text-purple-600">Retour demandé</span></td><td class="text-gray-400 font-mono text-xs">FR..0032WD</td></tr>
+              <template x-for="o in orders" :key="o.id">
+                <tr :class="orderRowClass(o.status)">
+                  <td class="py-3 font-medium" x-text="o.id"></td>
+                  <td x-text="o.customer"></td>
+                  <td x-text="o.product"></td>
+                  <td x-text="o.supplier"></td>
+                  <td class="font-semibold" x-text="o.amount.toFixed(2).replace('.', ',')+' €'"></td>
+                  <td><span class="tag-pill" :class="orderStatusMeta(o.status).pill" x-text="orderStatusMeta(o.status).label"></span></td>
+                  <td class="text-gray-400 font-mono text-xs" x-text="o.tracking"></td>
+                </tr>
+              </template>
             </tbody>
           </table>
           </div>
@@ -1600,6 +1646,24 @@
       <!-- ================= SETTINGS ================= -->
       <template x-if="page==='settings'"><div class="fade-enter space-y-6 max-w-7xl mx-auto">
 
+        <!-- Connexion réelle Etsy (OAuth PKCE — voir backend/routers/auth.py) -->
+        <div class="bg-white rounded-xl border border-gray-200 shadow-card p-5">
+          <div class="flex items-center justify-between mb-1">
+            <h3 class="font-bold text-sm text-ink-900">Boutique Etsy</h3>
+            <span class="tag-pill" :class="etsyConnected ? 'bg-accent-light text-accent-dark' : 'bg-gray-100 text-gray-600'" x-text="etsyConnected ? 'Connectée' : 'Non connectée'"></span>
+          </div>
+          <p class="text-xs text-gray-500 mb-4" x-show="currentUserEmail" x-text="'Compte EtsyDrop : ' + currentUserEmail"></p>
+          <div class="flex items-center gap-3">
+            <button x-show="!etsyConnected" @click="edConnectEtsy()" class="bg-accent hover:bg-accent-dark text-ink-900 font-bold text-sm px-4 py-2 rounded-lg transition">
+              <i class="fa-solid fa-store mr-1.5"></i>Connecter ma boutique Etsy
+            </button>
+            <button x-show="etsyConnected" @click="edDisconnectEtsy()" class="border border-gray-200 hover:bg-gray-50 text-gray-600 font-semibold text-sm px-4 py-2 rounded-lg transition">
+              Déconnecter la boutique
+            </button>
+            <button x-show="currentUserEmail" @click="edLogout()" class="text-xs text-gray-400 hover:text-gray-600 underline">Se déconnecter d'EtsyDrop</button>
+          </div>
+        </div>
+
         <div class="bg-white rounded-xl border border-gray-200 shadow-card p-5">
           <h3 class="font-bold text-sm text-ink-900 mb-4">Intégrations connectées</h3>
           <div class="grid grid-cols-3 gap-3">
@@ -1669,6 +1733,43 @@ function app() {
     page: 'dashboard',
     sidebarOpen: false,
     darkMode: (() => { try { return localStorage.getItem('etsydrop_dark') === '1'; } catch(e) { return false; } })(),
+
+    // ===== Intégration API réelle (voir le <script> EDAPI dans <head>) =====
+    // Renseignés par window._edPostAuth() une fois connecté — restent à leurs
+    // valeurs par défaut (déconnecté, aucun email) tant que la session
+    // Supabase locale n'est pas restaurée ou que le formulaire n'a pas validé.
+    etsyConnected: false,
+    currentUserEmail: null,
+
+    // ===== Commandes (Etsy — flux de fulfillment) =====
+    // Statut brut = valeur de l'enum OrderStatus (backend/models.py) — le
+    // libellé/la couleur affichés viennent de orderStatusMeta() ci-dessous,
+    // partagée entre les données de démo et les commandes réelles chargées
+    // par window._edPostAuth().
+    orders: [
+      { id:'#EY-88213', customer:'Claire M.', product:'Collier prénom "Emma"', supplier:'Mon catalogue', amount:24.90, status:'delivered', tracking:'FR..8823JT' },
+      { id:'#EY-88214', customer:'Julien P.', product:'Bracelet initiales "J&L"', supplier:'Mon catalogue', amount:18.90, status:'in_transit', tracking:'FR..2291KX' },
+      { id:'#EY-88215', customer:'Sarah T.', product:'Bague prénom ajustable', supplier:'CJ Dropshipping', amount:20.40, status:'pending_supplier', tracking:'—' },
+      { id:'#EY-88190', customer:'Marc D.', product:'Chaîne de cheville gravée', supplier:'CJ Dropshipping', amount:17.90, status:'delayed', tracking:'CN..7745QP' },
+      { id:'#EY-88216', customer:'Léa B.', product:'Mug personnalisé prénom', supplier:'Printify', amount:19.90, status:'delivered', tracking:'FR..9013MZ' },
+      { id:'#EY-88217', customer:'Thomas R.', product:"Boucles d'oreilles constellation", supplier:'Mon catalogue', amount:21.90, status:'in_transit', tracking:'FR..4471AL' },
+      { id:'#EY-88180', customer:'Inès K.', product:'Collier zodiaque "Lion"', supplier:'Eprolo', amount:22.90, status:'return_requested', tracking:'FR..0032WD' }
+    ],
+    orderStatusMeta(status) {
+      const map = {
+        pending_supplier: { label: 'En attente fournisseur', pill: 'bg-amber-100 text-amber-700' },
+        in_transit:       { label: 'En transit',             pill: 'bg-blue-50 text-blue-600' },
+        delivered:        { label: 'Livrée',                 pill: 'bg-accent-light text-accent-dark' },
+        delayed:          { label: 'Retard',                 pill: 'bg-rose-100 text-rose-600' },
+        return_requested: { label: 'Retour demandé',         pill: 'bg-purple-100 text-purple-600' }
+      };
+      return map[status] || { label: status, pill: 'bg-gray-100 text-gray-600' };
+    },
+    orderRowClass(status) {
+      if (status === 'delayed') return 'bg-rose-50/40';
+      if (status === 'return_requested') return 'bg-purple-50/40';
+      return '';
+    },
 
     // ===== Command palette (Ctrl+K) =====
     paletteOpen: false,

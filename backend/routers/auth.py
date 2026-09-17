@@ -8,39 +8,51 @@
 # par Supabase Auth côté frontend — voir database.get_current_user().
 #
 # Flow PKCE (RFC 7636), requis par l'API Etsy v3 :
-#   1. GET  /api/auth/etsy/login     -> génère code_verifier/code_challenge,
-#                                        renvoie l'URL d'autorisation Etsy.
-#   2. L'utilisateur autorise sur etsy.com, Etsy redirige avec ?code&state.
-#   3. POST /api/auth/etsy/callback  -> échange le code contre les tokens,
-#                                        stockés en base (jamais côté client).
+#   1. GET /api/auth/etsy/login     -> génère code_verifier/code_challenge,
+#                                       renvoie l'URL d'autorisation Etsy.
+#   2. L'utilisateur autorise sur etsy.com, Etsy redirige le NAVIGATEUR (GET,
+#      pas de header Authorization possible) vers ETSY_REDIRECT_URI?code&state.
+#   3. GET /api/auth/etsy/callback  -> échange le code contre les tokens,
+#      stockés en base, puis redirige le navigateur vers FRONTEND_URL.
+#      L'utilisateur est identifié via le state (posé à l'étape 1), pas via
+#      get_current_user : une redirection navigateur ne porte aucun header.
 
 import base64
 import hashlib
+import logging
 import os
 import secrets
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import RedirectResponse
 
 from database import get_current_user, get_supabase
 from models import CurrentUser, EtsyOAuthCallback, EtsyOAuthLoginResponse
 
 router = APIRouter()
+logger = logging.getLogger("etsydrop.auth")
 
 # === CONFIGURATION (jamais loggée) ===
 ETSY_API_KEY = os.getenv("ETSY_API_KEY")
 ETSY_API_SECRET = os.getenv("ETSY_API_SECRET")
 ETSY_REDIRECT_URI = os.getenv("ETSY_REDIRECT_URI", "http://localhost:8000/api/auth/etsy/callback")
+# URL du frontend vers laquelle renvoyer le navigateur une fois l'échange terminé
+# (même variable que celle utilisée pour les redirections Stripe — routers/billing.py).
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5500")
 
 ETSY_AUTHORIZE_URL = "https://www.etsy.com/oauth/connect"
 ETSY_TOKEN_URL = "https://api.etsy.com/v3/public/oauth/token"
 ETSY_SCOPES = "listings_r listings_w shops_r transactions_r"
 
-# Stockage temporaire state -> code_verifier le temps du flow OAuth (quelques minutes).
+# Stockage temporaire state -> {code_verifier, user_id} le temps du flow OAuth
+# (quelques minutes). Le user_id est capturé ici, à l'étape où l'on a encore le
+# header Authorization du frontend — la redirection Etsy qui suit n'en aura plus.
 # ⚠️ En production : remplacer ce dict en mémoire par une table Supabase
-# (colonnes state, code_verifier, expires_at) — un dict en mémoire ne
-# survit pas à un redémarrage et n'est pas partagé entre plusieurs workers.
-_pkce_store: dict[str, str] = {}
+# (colonnes state, code_verifier, user_id, expires_at) — un dict en mémoire ne
+# survit pas à un redémarrage et n'est pas partagé entre plusieurs workers/instances
+# Railway.
+_pkce_store: dict[str, dict] = {}
 
 
 # === PKCE — GÉNÉRATION DU COUPLE VERIFIER / CHALLENGE (S256) ===
@@ -63,7 +75,7 @@ async def etsy_login(user: CurrentUser = Depends(get_current_user)):
 
     code_verifier, code_challenge = _generate_pkce_pair()
     state = secrets.token_urlsafe(24)
-    _pkce_store[state] = code_verifier
+    _pkce_store[state] = {"code_verifier": code_verifier, "user_id": user.id}
 
     params = {
         "response_type": "code",
@@ -79,17 +91,23 @@ async def etsy_login(user: CurrentUser = Depends(get_current_user)):
 
 
 # === ÉCHANGE DU CODE CONTRE LES TOKENS ETSY ===
-@router.post("/etsy/callback")
-async def etsy_callback(payload: EtsyOAuthCallback, user: CurrentUser = Depends(get_current_user)):
+@router.get("/etsy/callback")
+async def etsy_callback(
+    code: str = Query(..., min_length=10, max_length=512),
+    state: str = Query(..., min_length=10, max_length=128),
+):
     """
-    Échange le code d'autorisation reçu d'Etsy contre un access token +
-    refresh token, en validant le code_verifier PKCE associé au state.
-    Les tokens sont stockés en base Supabase, jamais renvoyés au frontend
-    ni posés en localStorage.
+    Cible de la redirection Etsy (GET, code+state en query string — jamais de
+    JSON body ni de header Authorization sur une navigation navigateur).
+    Échange le code contre un access/refresh token, les stocke en base
+    Supabase (jamais renvoyés au frontend ni posés en localStorage), puis
+    renvoie le navigateur vers FRONTEND_URL.
     """
-    code_verifier = _pkce_store.pop(payload.state, None)
-    if not code_verifier:
-        raise HTTPException(status_code=400, detail="State invalide ou expiré.")
+    validated = EtsyOAuthCallback(code=code, state=state)
+    entry = _pkce_store.pop(validated.state, None)
+    if not entry:
+        logger.warning("Callback Etsy avec un state invalide ou expiré.")
+        return RedirectResponse(f"{FRONTEND_URL}/?etsy_error=invalid_state")
 
     async with httpx.AsyncClient(timeout=10) as client:
         response = await client.post(
@@ -98,28 +116,29 @@ async def etsy_callback(payload: EtsyOAuthCallback, user: CurrentUser = Depends(
                 "grant_type": "authorization_code",
                 "client_id": ETSY_API_KEY,
                 "redirect_uri": ETSY_REDIRECT_URI,
-                "code": payload.code,
-                "code_verifier": code_verifier,
+                "code": validated.code,
+                "code_verifier": entry["code_verifier"],
             },
         )
 
     if response.status_code != 200:
         # On ne renvoie jamais le corps de la réponse Etsy telle quelle au client.
-        raise HTTPException(status_code=502, detail="Échec de l'échange du token Etsy.")
+        logger.warning("Échange du token Etsy échoué : %s", response.status_code)
+        return RedirectResponse(f"{FRONTEND_URL}/?etsy_error=token_exchange_failed")
 
     tokens = response.json()
 
     supabase = get_supabase()
     supabase.table("etsy_tokens").upsert(
         {
-            "user_id": user.id,
+            "user_id": entry["user_id"],
             "access_token": tokens["access_token"],
             "refresh_token": tokens["refresh_token"],
             "expires_in": tokens.get("expires_in"),
         }
     ).execute()
 
-    return {"connected": True}
+    return RedirectResponse(f"{FRONTEND_URL}/?etsy_connected=true")
 
 
 # === DÉCONNEXION DE LA BOUTIQUE ETSY ===
