@@ -28,6 +28,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 
 from database import get_current_user, get_supabase
+from etsy_client import etsy_get, etsy_shop_id_from_token
 from models import CurrentUser, EtsyOAuthCallback, EtsyOAuthLoginResponse
 
 router = APIRouter()
@@ -98,6 +99,100 @@ async def etsy_login(user: CurrentUser = Depends(get_current_user)):
     return EtsyOAuthLoginResponse(authorize_url=authorize_url, state=state)
 
 
+# === IMPORT INITIAL DES FICHES DE LA BOUTIQUE (déclenché juste après connexion) ===
+async def _sync_etsy_listings(user_id: str, access_token: str) -> int:
+    """
+    Importe les fiches actives de la boutique Etsy connectée dans la table
+    `listings`, pour que le Catalogue affiche autre chose qu'une table vide
+    juste après le callback OAuth. Upsert sur (user_id, etsy_listing_id) —
+    voir l'index unique dans database_schema.sql — donc une resynchronisation
+    met à jour les fiches déjà importées au lieu de les dupliquer.
+
+    Ne doit JAMAIS faire échouer le callback OAuth : le token doit être
+    sauvegardé et l'utilisateur redirigé même si cet import échoue (boutique
+    vide, rate limit Etsy, etc.) — toute erreur est donc loguée et avalée.
+    """
+    try:
+        etsy_user_id = etsy_shop_id_from_token(access_token)
+        shop = await etsy_get(f"/users/{etsy_user_id}/shops", access_token=access_token)
+        shop_id = shop.get("shop_id") if isinstance(shop, dict) else None
+        if not shop_id:
+            logger.warning("Sync listings Etsy : boutique introuvable pour user_id=%s.", user_id)
+            return 0
+
+        payload = await etsy_get(
+            f"/shops/{shop_id}/listings/active", access_token=access_token, params={"limit": 100}
+        )
+        etsy_listings = payload.get("results", []) if isinstance(payload, dict) else []
+    except Exception as exc:
+        logger.warning("Sync listings Etsy échouée pour user_id=%s : %s", user_id, type(exc).__name__)
+        return 0
+
+    # Les fiches importées doivent rester compatibles avec le modèle Listing
+    # (voir models.py) — sans ça, la lecture ultérieure via GET /api/listings/
+    # plante en ResponseValidationError (500 générique) au lieu de renvoyer
+    # les données. D'où les tailles/valeurs par défaut ci-dessous.
+    rows = []
+    for item in etsy_listings:
+        try:
+            listing_id = str(item.get("listing_id") or "")
+            if not listing_id:
+                continue
+
+            title = (item.get("title") or "Fiche Etsy sans titre").strip()[:140] or "Fiche Etsy"
+            if len(title) < 3:
+                title = title.ljust(3, ".")
+
+            description = (item.get("description") or "").strip()[:2000]
+            if len(description) < 10:
+                description = f"{title} — fiche importée depuis Etsy."
+
+            price_data = item.get("price")
+            if isinstance(price_data, dict) and "amount" in price_data:
+                price = float(price_data["amount"]) / float(price_data.get("divisor", 100) or 100)
+            else:
+                price = float(item.get("price") or 0)
+
+            tags = [t for t in (item.get("tags") or []) if t][:13] or ["etsy import"]
+
+            quantity = int(item.get("quantity") or 0)
+            if quantity <= 0:
+                stock_status = "out_of_stock"
+            elif quantity < 5:
+                stock_status = "low_stock"
+            else:
+                stock_status = "available"
+
+            rows.append(
+                {
+                    "user_id": user_id,
+                    "etsy_listing_id": listing_id,
+                    "name": title,
+                    "description": description,
+                    "tags": tags,
+                    "price_min": round(price, 2),
+                    "price_max": round(price, 2),
+                    "supplier": "my_catalog",
+                    "variants": [],
+                    "stock_status": stock_status,
+                    "margin_pct": 0,
+                }
+            )
+        except (TypeError, ValueError):
+            continue
+
+    if not rows:
+        return 0
+
+    try:
+        get_supabase().table("listings").upsert(rows, on_conflict="user_id,etsy_listing_id").execute()
+    except Exception as exc:
+        logger.warning("Écriture des listings Etsy échouée pour user_id=%s : %s", user_id, type(exc).__name__)
+        return 0
+
+    return len(rows)
+
+
 # === ÉCHANGE DU CODE CONTRE LES TOKENS ETSY ===
 @router.get("/etsy/callback")
 async def etsy_callback(
@@ -145,6 +240,9 @@ async def etsy_callback(
             "expires_in": tokens.get("expires_in"),
         }
     ).execute()
+
+    synced = await _sync_etsy_listings(entry["user_id"], tokens["access_token"])
+    logger.info("Connexion Etsy réussie pour user_id=%s : %d fiches importées.", entry["user_id"], synced)
 
     return RedirectResponse(f"{FRONTEND_URL}/?etsy_connected=true")
 

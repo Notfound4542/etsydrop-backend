@@ -336,10 +336,17 @@
       const me = await window.EDAPI.me().catch(() => null);
       if (me) state.etsyConnected = !!me.etsy_shop_connected;
 
-      const summary = await window.EDAPI.summary().catch(() => null);
-      if (summary && summary.revenue_total) {
-        state.revenueTotal = summary.revenue_total;
-        state.revenueDisplay = summary.revenue_total;
+      // /api/analytics/summary lit une table jamais alimentée par aucun job
+      // de sync (voir backend/routers/analytics.py) — elle est toujours
+      // vide. /api/analytics/revenue, lui, interroge les receipts Etsy en
+      // direct avec le token OAuth stocké : c'est la seule source de
+      // revenu réellement connectée à la boutique.
+      if (me && me.etsy_shop_connected) {
+        const revenue = await window.EDAPI.revenue('30d').catch(() => null);
+        if (revenue) {
+          state.revenueTotal = revenue.revenue_gross;
+          state.revenueDisplay = revenue.revenue_gross;
+        }
       }
 
       const listings = await window.EDAPI.listings().catch(() => null);

@@ -100,9 +100,16 @@ ALTER TABLE etsy_tokens ADD COLUMN IF NOT EXISTS expires_in INTEGER;
 ALTER TABLE etsy_tokens ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
 
 -- === LISTINGS — fiches produit du catalogue ===
+-- etsy_listing_id : renseigné uniquement pour les fiches importées depuis
+-- la boutique Etsy connectée (voir routers/auth.py > _sync_etsy_listings) ;
+-- NULL pour les fiches créées à la main via POST /api/listings/. Contrainte
+-- unique par utilisateur pour permettre un upsert idempotent lors des
+-- resynchronisations (sans quoi chaque connexion Etsy dupliquerait les
+-- lignes au lieu de les mettre à jour).
 CREATE TABLE IF NOT EXISTS listings (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   user_id UUID REFERENCES auth.users(id) NOT NULL,
+  etsy_listing_id TEXT,
   name TEXT NOT NULL,
   description TEXT NOT NULL,
   tags TEXT[] DEFAULT '{}',
@@ -115,6 +122,7 @@ CREATE TABLE IF NOT EXISTS listings (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id);
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS etsy_listing_id TEXT;
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS name TEXT DEFAULT '';
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS description TEXT DEFAULT '';
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS tags TEXT[] DEFAULT '{}';
@@ -126,6 +134,7 @@ ALTER TABLE listings ADD COLUMN IF NOT EXISTS stock_status TEXT DEFAULT 'availab
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS margin_pct DECIMAL(5,2) DEFAULT 0;
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
 CREATE INDEX IF NOT EXISTS idx_listings_user_stock ON listings(user_id, stock_status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_listings_user_etsy_id ON listings(user_id, etsy_listing_id) WHERE etsy_listing_id IS NOT NULL;
 
 -- === ORDERS — commandes Etsy synchronisées + fulfillment ===
 CREATE TABLE IF NOT EXISTS orders (

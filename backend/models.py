@@ -77,6 +77,10 @@ class ListingCreate(BaseModel):
 
 class Listing(ListingCreate):
     id: str
+    # Renseigné uniquement pour les fiches importées depuis la boutique Etsy
+    # connectée (voir routers/auth.py > _sync_etsy_listings) — jamais soumis
+    # par le client, donc absent de ListingCreate.
+    etsy_listing_id: Optional[str] = None
     stock_status: StockStatus
     margin_pct: float = Field(..., ge=0, le=100)
     created_at: datetime
