@@ -241,6 +241,8 @@ async def etsy_callback(
         logger.warning("Callback Etsy avec un state invalide ou expiré.")
         return RedirectResponse(f"{FRONTEND_URL}/?etsy_error=invalid_state")
 
+    logger.info("etsy_callback appelé pour user_id=%s (shop_name=%r).", entry["user_id"], entry.get("shop_name"))
+
     async with httpx.AsyncClient(timeout=10) as client:
         response = await client.post(
             ETSY_TOKEN_URL,
@@ -290,6 +292,8 @@ async def etsy_callback(
             exc_info=True,
         )
         return RedirectResponse(f"{FRONTEND_URL}/?etsy_error=token_save_failed")
+
+    logger.info("Token Etsy enregistré pour user_id=%s (shop_id=%s).", entry["user_id"], shop_id)
 
     synced = await _sync_etsy_listings(entry["user_id"], tokens["access_token"], shop_id)
     logger.info("Connexion Etsy réussie pour user_id=%s : %d fiches importées.", entry["user_id"], synced)
