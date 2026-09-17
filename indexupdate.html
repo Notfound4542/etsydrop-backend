@@ -1,0 +1,1917 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EtsyDrop — Tableau de bord</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2222%22 fill=%22%2300C896%22/><text x=%2250%22 y=%2268%22 font-size=%2258%22 text-anchor=%22middle%22 fill=%22white%22 font-family=%22Arial%22 font-weight=%22bold%22>E</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.5/dist/cdn.min.js"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        fontFamily: { sans: ['Inter', 'ui-sans-serif', 'system-ui'], display: ['Plus Jakarta Sans', 'Inter', 'ui-sans-serif', 'system-ui'] },
+        colors: {
+          accent: { DEFAULT: '#00C896', dark: '#00A87F', light: '#E6FBF4' },
+          ink: { 900:'#0B0D10', 800:'#12151A', 700:'#1B1F27', 600:'#262B35', 500:'#3A4150' },
+          canvas: '#F6F7F9'
+        },
+        boxShadow: { card: '0 1px 2px 0 rgba(16,24,32,0.04), 0 1px 3px 0 rgba(16,24,32,0.06)' }
+      }
+    }
+  }
+</script>
+<style>
+  [x-cloak] { display: none !important; }
+  html { scroll-behavior: smooth; }
+  body { font-family: 'Inter', ui-sans-serif, system-ui; }
+  ::selection { background: rgba(0,200,150,0.2); }
+  :focus-visible { outline: 2px solid #00C896; outline-offset: 2px; }
+  button:active { transform: scale(0.97); }
+  h1, h2, h3, h4, .font-extrabold { font-family: 'Plus Jakarta Sans', 'Inter', ui-sans-serif, system-ui; }
+  .font-extrabold { font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+  /* KPI / form label treatment site-wide: uppercase, widened tracking, smaller */
+  .text-xs.font-semibold.text-gray-500 { text-transform: uppercase; letter-spacing: 0.05em; font-size: 11px; color: #9CA3AF; }
+  .dark .text-xs.font-semibold.text-gray-500 { color: #838C99; }
+  .scrollbar-thin::-webkit-scrollbar { width: 6px; height: 6px; }
+  .scrollbar-thin::-webkit-scrollbar-thumb { background: #2A3038; border-radius: 999px; }
+  .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+  .num { font-variant-numeric: tabular-nums; }
+  .nav-active { background: rgba(0,200,150,0.12); color: #00C896; }
+  .nav-active .nav-bar { opacity: 1; }
+  .tag-pill { display:inline-flex; align-items:center; gap:4px; font-size:11px; font-weight:600; padding:2px 8px; border-radius:999px; }
+  .fade-enter { animation: fadeIn .18s ease-out; }
+  @keyframes fadeIn { from { opacity:0; transform: translateY(4px);} to { opacity:1; transform: translateY(0);} }
+  /* Card hover lift — applies to every card site-wide since they all share .shadow-card */
+  .shadow-card { transition: box-shadow 150ms cubic-bezier(0.4,0,0.2,1), transform 150ms cubic-bezier(0.4,0,0.2,1); }
+  .shadow-card:hover { box-shadow: 0 8px 24px rgba(16,24,32,0.10); transform: translateY(-1px); }
+  .dark .shadow-card:hover { box-shadow: 0 8px 24px rgba(0,0,0,0.45); }
+
+  /* ===== Dark mode overrides (scoped to .dark ancestor, toggled on the app root) ===== */
+  .dark { color-scheme: dark; color: #E5E7EB; }
+  .dark main { background-color: #0B0D10; }
+  .dark .bg-canvas { background-color: #0B0D10; }
+  .dark .bg-white { background-color: #1A1D23 !important; }
+  .dark .border-gray-200 { border-color: #262B35 !important; }
+  .dark .border-gray-100 { border-color: #232730 !important; }
+  .dark .divide-gray-50 > * + * { border-color: #232730 !important; }
+  .dark .bg-gray-50 { background-color: #20242C !important; }
+  .dark .bg-gray-100 { background-color: #262B35 !important; }
+  .dark .hover\:bg-gray-50:hover { background-color: #232730 !important; }
+  .dark .hover\:bg-gray-100:hover { background-color: #262B35 !important; }
+  .dark .text-ink-900 { color: #F3F4F6 !important; }
+  .dark .text-ink-800 { color: #E5E7EB !important; }
+  .dark .text-gray-700 { color: #D1D5DB !important; }
+  .dark .text-gray-600 { color: #9CA3AF !important; }
+  .dark .text-gray-500 { color: #838C99 !important; }
+  .dark .text-gray-400 { color: #5B6472 !important; }
+  .dark hr { border-color: #262B35 !important; }
+  .dark input, .dark select { background-color: #20242C; border-color: #262B35 !important; color: #E5E7EB; }
+  .dark input::placeholder { color: #5B6472; }
+  .dark .shadow-card { box-shadow: 0 1px 2px 0 rgba(0,0,0,0.35), 0 1px 3px 0 rgba(0,0,0,0.45); }
+  .dark .bg-gray-100.text-gray-700, .dark .bg-gray-100.text-gray-600 { background-color:#262B35 !important; }
+  .lqs-bg { stroke: #F1F2F4; }
+  .dark .lqs-bg { stroke: #262B35; }
+</style>
+</head>
+<body class="bg-canvas text-ink-800 antialiased">
+<script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.9.2/dist/confetti.browser.min.js"></script>
+<div x-data="app()" x-init="init()" :class="{ dark: darkMode }" class="flex h-screen overflow-hidden">
+
+  <!-- Command palette (Ctrl+K) -->
+  <div x-show="paletteOpen" x-cloak @keydown.escape.window="paletteOpen = false" @click="paletteOpen = false" class="fixed inset-0 z-50 flex items-start justify-center pt-24 bg-black/60 backdrop-blur-sm">
+    <div @click.stop class="w-full max-w-lg mx-4 bg-[#0D0F12] border border-accent/30 rounded-xl shadow-2xl overflow-hidden">
+      <div class="flex items-center gap-2 px-4 py-3 border-b border-white/10">
+        <i class="fa-solid fa-magnifying-glass text-gray-500 text-sm"></i>
+        <input x-ref="paletteInput" x-model="paletteQuery"
+               @keydown.arrow-down.prevent="paletteMoveDown()" @keydown.arrow-up.prevent="paletteMoveUp()" @keydown.enter.prevent="paletteSelect()"
+               type="text" placeholder="Rechercher une page, un produit…" class="flex-1 bg-transparent text-white text-sm outline-none placeholder-gray-500">
+        <span class="text-[10px] font-semibold text-gray-500 border border-white/10 rounded px-1.5 py-0.5 flex-shrink-0">ESC</span>
+      </div>
+      <div class="max-h-80 overflow-y-auto scrollbar-thin py-2">
+        <template x-if="paletteResults().pages.length">
+          <div class="px-2 mb-1">
+            <p class="text-[10px] font-bold uppercase tracking-widest text-gray-500 px-2.5 py-1">Pages</p>
+            <template x-for="(r, idx) in paletteResults().pages" :key="'p-'+r.page">
+              <button @click="paletteGoTo(r)" @mouseenter="paletteIndex = paletteFlatIndex('page', idx)"
+                class="w-full flex items-center gap-3 px-2.5 py-2 rounded-lg text-sm text-left transition"
+                :class="paletteIndex === paletteFlatIndex('page', idx) ? 'bg-accent/15 text-accent' : 'text-gray-300 hover:bg-white/5'">
+                <i class="fa-solid w-4 text-center" :class="r.icon"></i>
+                <span x-text="r.label"></span>
+              </button>
+            </template>
+          </div>
+        </template>
+        <template x-if="paletteResults().products.length">
+          <div class="px-2">
+            <p class="text-[10px] font-bold uppercase tracking-widest text-gray-500 px-2.5 py-1">Produits</p>
+            <template x-for="(r, idx) in paletteResults().products" :key="'pr-'+r.id">
+              <button @click="paletteGoTo(r)" @mouseenter="paletteIndex = paletteFlatIndex('product', idx)"
+                class="w-full flex items-center gap-3 px-2.5 py-2 rounded-lg text-sm text-left transition"
+                :class="paletteIndex === paletteFlatIndex('product', idx) ? 'bg-accent/15 text-accent' : 'text-gray-300 hover:bg-white/5'">
+                <i class="fa-solid fa-swatchbook w-4 text-center"></i>
+                <span x-text="r.name"></span>
+              </button>
+            </template>
+          </div>
+        </template>
+        <template x-if="!paletteResults().pages.length && !paletteResults().products.length">
+          <p class="text-center text-sm text-gray-500 py-6">Aucun résultat pour « <span x-text="paletteQuery"></span> »</p>
+        </template>
+      </div>
+    </div>
+  </div>
+
+  <!-- Focus Mode (double-clic sur une card graphique) -->
+  <template x-if="focusMode">
+    <div @click.self="closeFocusMode()" @keydown.escape.window="closeFocusMode()" class="fixed inset-0 z-50 bg-black/60 backdrop-blur-md flex items-center justify-center p-6">
+      <div @click.stop class="bg-white rounded-2xl w-full max-w-4xl shadow-2xl flex flex-col" style="height:70vh">
+        <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100 flex-shrink-0">
+          <div>
+            <span class="text-[10px] font-bold uppercase tracking-widest text-gray-400">Focus Mode</span>
+            <h2 class="font-bold text-lg text-ink-900" x-text="focusChartTitles[focusChartId] || ''"></h2>
+          </div>
+          <button @click="closeFocusMode()" class="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-500"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="flex-1 p-6 min-h-0">
+          <canvas id="focusCanvas"></canvas>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <!-- Mobile drawer backdrop -->
+  <div x-show="sidebarOpen" x-cloak x-transition.opacity @click="sidebarOpen = false" class="fixed inset-0 bg-black/50 z-30 md:hidden"></div>
+
+  <!-- ============ SIDEBAR ============ -->
+  <aside :class="sidebarOpen ? 'translate-x-0' : '-translate-x-full'" class="fixed md:static inset-y-0 left-0 z-40 md:translate-x-0 transition-transform duration-200 w-[248px] flex-shrink-0 bg-ink-900 text-gray-300 flex flex-col h-screen">
+    <div class="h-16 flex items-center gap-2.5 px-5 border-b border-white/5 flex-shrink-0">
+      <div class="w-8 h-8 rounded-lg bg-accent flex items-center justify-center font-extrabold text-ink-900 text-sm">ED</div>
+      <span class="text-white font-bold text-[15px] tracking-tight">EtsyDrop</span>
+      <span class="ml-auto text-[10px] font-semibold px-1.5 py-0.5 rounded bg-white/10 text-gray-400">BETA</span>
+    </div>
+
+    <nav @click="if ($event.target.closest('button')) sidebarOpen = false" class="flex-1 overflow-y-auto scrollbar-thin py-3 px-3 space-y-0.5">
+      <button @click="page='dashboard'" :class="page==='dashboard' ? 'nav-active' : 'hover:bg-white/5 text-gray-300'" class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition">
+        <i class="fa-solid fa-house w-4 text-center"></i> Dashboard
+      </button>
+
+      <p class="px-3 pt-4 pb-1 text-[10px] font-bold uppercase tracking-wider text-gray-500">Produits</p>
+      <button @click="page='catalogue'" :class="page==='catalogue' ? 'nav-active' : 'hover:bg-white/5 text-gray-300'" class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition">
+        <i class="fa-solid fa-swatchbook w-4 text-center"></i> Catalogue
+      </button>
+      <button @click="page='sourcing'" :class="page==='sourcing' ? 'nav-active' : 'hover:bg-white/5 text-gray-300'" class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition">
+        <i class="fa-solid fa-layer-group w-4 text-center"></i> Sourcing multi-sources
+      </button>
+      <button @click="page='orders'" :class="page==='orders' ? 'nav-active' : 'hover:bg-white/5 text-gray-300'" class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition">
+        <i class="fa-solid fa-truck-fast w-4 text-center"></i> Commandes
+        <span class="ml-auto text-[10px] font-bold bg-accent text-ink-900 rounded-full px-1.5 py-0.5">6</span>
+      </button>
+      <button @click="page='mockups'" :class="page==='mockups' ? 'nav-active' : 'hover:bg-white/5 text-gray-300'" class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition">
+        <i class="fa-solid fa-image w-4 text-center"></i> Mockups IA
+      </button>
+
+      <p class="px-3 pt-4 pb-1 text-[10px] font-bold uppercase tracking-wider text-gray-500">Croissance</p>
+      <button @click="page='seo'" :class="page==='seo' ? 'nav-active' : 'hover:bg-white/5 text-gray-300'" class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition">
+        <i class="fa-solid fa-magnifying-glass w-4 text-center"></i> SEO &amp; Mots-clés
+      </button>
+      <button @click="page='rank'" :class="page==='rank' ? 'nav-active' : 'hover:bg-white/5 text-gray-300'" class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition">
+        <i class="fa-solid fa-ranking-star w-4 text-center"></i> Rank Tracker
+      </button>
+      <button @click="page='competitors'" :class="page==='competitors' ? 'nav-active' : 'hover:bg-white/5 text-gray-300'" class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition">
+        <i class="fa-solid fa-crosshairs w-4 text-center"></i> Analyse concurrents
+      </button>
+      <button @click="page='niches'" :class="page==='niches' ? 'nav-active' : 'hover:bg-white/5 text-gray-300'" class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition">
+        <i class="fa-solid fa-compass w-4 text-center"></i> Niche Finder
+      </button>
+      <button @click="page='promotion'" :class="page==='promotion' ? 'nav-active' : 'hover:bg-white/5 text-gray-300'" class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition">
+        <i class="fa-solid fa-bullhorn w-4 text-center"></i> Promotion
+      </button>
+
+      <p class="px-3 pt-4 pb-1 text-[10px] font-bold uppercase tracking-wider text-gray-500">Pilotage</p>
+      <button @click="page='analytics'" :class="page==='analytics' ? 'nav-active' : 'hover:bg-white/5 text-gray-300'" class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition">
+        <i class="fa-solid fa-chart-line w-4 text-center"></i> Analytics
+      </button>
+      <button @click="page='shipping'" :class="page==='shipping' ? 'nav-active' : 'hover:bg-white/5 text-gray-300'" class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition">
+        <i class="fa-solid fa-globe w-4 text-center"></i> Coûts &amp; Expédition
+      </button>
+      <button @click="page='taxes'" :class="page==='taxes' ? 'nav-active' : 'hover:bg-white/5 text-gray-300'" class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition">
+        <i class="fa-solid fa-landmark w-4 text-center"></i> Taxes &amp; Change
+      </button>
+      <button @click="page='ai'" :class="page==='ai' ? 'nav-active' : 'hover:bg-white/5 text-gray-300'" class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition">
+        <i class="fa-solid fa-robot w-4 text-center"></i> Conseils IA
+        <span class="ml-auto w-1.5 h-1.5 rounded-full bg-accent"></span>
+      </button>
+
+      <p class="px-3 pt-4 pb-1 text-[10px] font-bold uppercase tracking-wider text-gray-500">Compte</p>
+      <button @click="page='settings'" :class="page==='settings' ? 'nav-active' : 'hover:bg-white/5 text-gray-300'" class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition">
+        <i class="fa-solid fa-gear w-4 text-center"></i> Intégrations &amp; Paramètres
+      </button>
+    </nav>
+
+    <div class="p-3 border-t border-white/5 flex-shrink-0">
+      <div class="rounded-xl bg-gradient-to-br from-accent/20 to-transparent border border-accent/25 p-3 mb-3">
+        <p class="text-white text-xs font-semibold mb-0.5">Plan Free</p>
+        <p class="text-gray-400 text-[11px] mb-2 leading-snug">3/5 modules débloqués. Passe Pro pour tout débloquer.</p>
+        <button class="w-full bg-accent hover:bg-accent-dark text-ink-900 text-xs font-bold py-1.5 rounded-lg transition">Passer à Pro — 12€/mois</button>
+      </div>
+      <div class="flex items-center gap-2.5 px-1">
+        <img src="https://i.pravatar.cc/64?img=47" class="w-8 h-8 rounded-full ring-2 ring-white/10">
+        <div class="min-w-0">
+          <p class="text-white text-xs font-semibold truncate">Lumino Bijoux</p>
+          <p class="text-gray-500 text-[11px] truncate">contact@luminobijoux.fr</p>
+        </div>
+        <i class="fa-solid fa-ellipsis-vertical text-gray-500 text-xs ml-auto"></i>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ============ MAIN ============ -->
+  <div class="flex-1 flex flex-col h-screen overflow-hidden">
+
+    <!-- Topbar -->
+    <header class="h-16 bg-white border-b border-gray-200 flex items-center gap-3 px-4 md:px-6 flex-shrink-0">
+      <button @click="sidebarOpen = !sidebarOpen" class="md:hidden w-9 h-9 flex-shrink-0 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-600">
+        <i class="fa-solid fa-bars"></i>
+      </button>
+      <div class="min-w-0">
+        <h1 class="text-[15px] font-bold text-ink-900 truncate" x-text="titles[page]"></h1>
+        <p class="text-[12px] text-gray-500 truncate hidden sm:block" x-text="subtitles[page]"></p>
+      </div>
+      <div class="relative ml-2 md:ml-4 flex-1 max-w-md hidden sm:block">
+        <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-xs"></i>
+        <input type="text" placeholder="Rechercher un produit, mot-clé, commande…" class="w-full bg-gray-100 border border-transparent focus:border-accent focus:bg-white rounded-lg pl-9 pr-3 py-2 text-sm outline-none transition">
+      </div>
+      <div class="ml-auto flex items-center gap-1.5 md:gap-3 flex-shrink-0">
+        <span class="hidden md:flex items-center gap-1.5 text-[11px] font-semibold text-accent bg-accent-light px-2.5 py-1 rounded-full">
+          <span class="relative flex w-1.5 h-1.5">
+            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-accent opacity-75"></span>
+            <span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-accent"></span>
+          </span>
+          Boutique connectée
+        </span>
+        <button @click="toggleDark()" class="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-600" :title="darkMode ? 'Passer en mode clair' : 'Passer en mode sombre'">
+          <i class="fa-solid" :class="darkMode ? 'fa-sun' : 'fa-moon'"></i>
+        </button>
+        <button class="relative w-9 h-9 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-600">
+          <i class="fa-regular fa-bell"></i>
+          <span class="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-rose-500 ring-2 ring-white"></span>
+        </button>
+        <img src="https://i.pravatar.cc/64?img=47" class="w-9 h-9 rounded-full border border-gray-200 flex-shrink-0">
+      </div>
+    </header>
+
+    <main class="flex-1 overflow-y-auto scrollbar-thin p-6">
+
+      <!-- ================= DASHBOARD ================= -->
+      <template x-if="page==='dashboard'"><div class="fade-enter space-y-6 max-w-7xl mx-auto">
+
+        <div class="grid grid-cols-4 gap-4">
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4 transition-shadow" :class="{ 'ring-2 ring-accent': revenueFlash }">
+            <div class="flex items-center justify-between mb-2">
+              <span class="text-xs font-semibold text-gray-500 flex items-center gap-1.5">
+                Revenu (30j)
+                <span class="relative flex w-1.5 h-1.5">
+                  <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-accent opacity-75"></span>
+                  <span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-accent"></span>
+                </span>
+                <span class="text-[9px] font-bold text-accent-dark normal-case tracking-normal">Live</span>
+              </span>
+              <i class="fa-solid fa-sack-dollar text-accent text-sm"></i>
+            </div>
+            <p class="text-2xl font-extrabold text-ink-900 num" x-text="formatRevenue(revenueDisplay)"></p>
+            <p class="text-xs text-accent font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +18,4% vs mois dernier</p>
+          </div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4">
+            <div class="flex items-center justify-between mb-2">
+              <span class="text-xs font-semibold text-gray-500">Bénéfice net</span>
+              <i class="fa-solid fa-coins text-accent text-sm"></i>
+            </div>
+            <p class="text-2xl font-extrabold text-ink-900 num">3 524,80 €</p>
+            <p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +21,2% vs mois dernier</p>
+          </div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4">
+            <div class="flex items-center justify-between mb-2">
+              <span class="text-xs font-semibold text-gray-500">Commandes</span>
+              <i class="fa-solid fa-box text-accent text-sm"></i>
+            </div>
+            <p class="text-2xl font-extrabold text-ink-900 num">342</p>
+            <p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +9,6% vs mois dernier</p>
+          </div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4">
+            <div class="flex items-center justify-between mb-2">
+              <span class="text-xs font-semibold text-gray-500">Note boutique</span>
+              <i class="fa-solid fa-star text-amber-400 text-sm"></i>
+            </div>
+            <p class="text-2xl font-extrabold text-ink-900 num">4,9 / 5</p>
+            <p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +0,1 vs mois dernier</p>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-3 gap-4">
+          <div @dblclick="openFocusMode('chartRevenue')" title="Double-clic pour agrandir" class="col-span-2 bg-white rounded-xl border border-gray-200 shadow-card p-5 cursor-zoom-in">
+            <div class="flex items-center justify-between mb-4">
+              <div>
+                <h3 class="font-bold text-sm text-ink-900">Revenu &amp; bénéfice net</h3>
+                <p class="text-xs text-gray-500">6 derniers mois</p>
+              </div>
+              <div class="flex gap-3 text-xs font-semibold">
+                <span class="flex items-center gap-1.5 text-gray-600"><span class="w-2.5 h-2.5 rounded-full bg-accent"></span>Revenu</span>
+                <span class="flex items-center gap-1.5 text-gray-600"><span class="w-2.5 h-2.5 rounded-full bg-ink-600"></span>Bénéfice</span>
+              </div>
+            </div>
+            <canvas id="chartRevenue" height="110"></canvas>
+          </div>
+          <div @dblclick="openFocusMode('chartOrdersStatus')" title="Double-clic pour agrandir" class="bg-white rounded-xl border border-gray-200 shadow-card p-5 cursor-zoom-in">
+            <h3 class="font-bold text-sm text-ink-900 mb-1">Statut des commandes</h3>
+            <p class="text-xs text-gray-500 mb-4">30 derniers jours</p>
+            <canvas id="chartOrdersStatus" height="150"></canvas>
+            <div class="mt-4 space-y-1.5 text-xs">
+              <div class="flex justify-between"><span class="flex items-center gap-1.5 text-gray-600"><span class="w-2 h-2 rounded-full bg-accent"></span>Livrées</span><span class="font-semibold">276</span></div>
+              <div class="flex justify-between"><span class="flex items-center gap-1.5 text-gray-600"><span class="w-2 h-2 rounded-full bg-blue-400"></span>En transit</span><span class="font-semibold">48</span></div>
+              <div class="flex justify-between"><span class="flex items-center gap-1.5 text-gray-600"><span class="w-2 h-2 rounded-full bg-amber-400"></span>En attente</span><span class="font-semibold">12</span></div>
+              <div class="flex justify-between"><span class="flex items-center gap-1.5 text-gray-600"><span class="w-2 h-2 rounded-full bg-rose-400"></span>Retard/Litige</span><span class="font-semibold">6</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-3 gap-4">
+          <div class="col-span-2 bg-white rounded-xl border border-gray-200 shadow-card p-5">
+            <h3 class="font-bold text-sm text-ink-900 mb-4">Top produits (30 jours)</h3>
+            <table class="w-full text-sm">
+              <thead><tr class="text-left text-xs text-gray-500 border-b border-gray-100">
+                <th class="pb-2 font-semibold">Produit</th><th class="pb-2 font-semibold">Ventes</th><th class="pb-2 font-semibold">Revenu</th><th class="pb-2 font-semibold">Marge</th><th class="pb-2 font-semibold">Tendance 7j</th>
+              </tr></thead>
+              <tbody class="divide-y divide-gray-50">
+                <tr><td class="py-2.5 flex items-center gap-2"><img src="https://picsum.photos/seed/necklace1/32" class="w-8 h-8 rounded-lg object-cover"><span class="font-medium">Collier prénom plaqué or</span></td><td>89</td><td class="font-semibold">2 224,10 €</td><td><span class="tag-pill bg-accent-light text-accent-dark">46%</span></td><td><svg viewBox="0 0 64 24" width="64" height="24"><polyline points="1.00,23.00 11.33,17.50 21.67,12.01 32.00,15.67 42.33,6.51 52.67,10.18 63.00,1.02" fill="none" stroke="#00C896" stroke-width="1.5"></polyline></svg></td></tr>
+                <tr><td class="py-2.5 flex items-center gap-2"><img src="https://picsum.photos/seed/bracelet2/32" class="w-8 h-8 rounded-lg object-cover"><span class="font-medium">Bracelet initiales gravées</span></td><td>64</td><td class="font-semibold">1 471,80 €</td><td><span class="tag-pill bg-accent-light text-accent-dark">42%</span></td><td><svg viewBox="0 0 64 24" width="64" height="24"><polyline points="1.00,18.12 11.33,23.00 21.67,13.23 32.00,5.91 42.33,10.79 52.67,1.02 63.00,8.35" fill="none" stroke="#00C896" stroke-width="1.5"></polyline></svg></td></tr>
+                <tr><td class="py-2.5 flex items-center gap-2"><img src="https://picsum.photos/seed/ring3/32" class="w-8 h-8 rounded-lg object-cover"><span class="font-medium">Bague prénom ajustable</span></td><td>51</td><td class="font-semibold">1 040,49 €</td><td><span class="tag-pill bg-amber-100 text-amber-700">31%</span></td><td><svg viewBox="0 0 64 24" width="64" height="24"><polyline points="1.00,1.03 11.33,10.45 21.67,16.72 32.00,23.00 42.33,13.58 52.67,19.86 63.00,13.58" fill="none" stroke="#F43F5E" stroke-width="1.5"></polyline></svg></td></tr>
+                <tr><td class="py-2.5 flex items-center gap-2"><img src="https://picsum.photos/seed/earrings4/32" class="w-8 h-8 rounded-lg object-cover"><span class="font-medium">Boucles d'oreilles constellation</span></td><td>38</td><td class="font-semibold">834,20 €</td><td><span class="tag-pill bg-accent-light text-accent-dark">39%</span></td><td><svg viewBox="0 0 64 24" width="64" height="24"><polyline points="1.00,23.00 11.33,15.68 21.67,8.36 32.00,19.34 42.33,12.02 52.67,1.04 63.00,8.36" fill="none" stroke="#00C896" stroke-width="1.5"></polyline></svg></td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-5">
+            <h3 class="font-bold text-sm text-ink-900 mb-3">Alertes récentes</h3>
+            <div class="space-y-3 text-sm">
+              <div class="flex gap-2.5"><i class="fa-solid fa-triangle-exclamation text-rose-500 mt-0.5 text-xs"></i><p><span class="font-semibold">Bague prénom ajustable</span> rupture de stock chez Eprolo.</p></div>
+              <div class="flex gap-2.5"><i class="fa-solid fa-arrow-trend-down text-amber-500 mt-0.5 text-xs"></i><p><span class="font-semibold">Collier zodiaque</span> a chuté hors du top 8 sur "collier signe astro".</p></div>
+              <div class="flex gap-2.5"><i class="fa-solid fa-robot text-accent mt-0.5 text-xs"></i><p>Nouveau rapport IA disponible : 3 actions prioritaires.</p></div>
+              <div class="flex gap-2.5"><i class="fa-solid fa-truck text-blue-500 mt-0.5 text-xs"></i><p>4 commandes en retard de livraison &gt; 12 jours (CJ Dropshipping).</p></div>
+            </div>
+          </div>
+        </div>
+      </div></template>
+
+      <!-- ================= CATALOGUE ================= -->
+      <template x-if="page==='catalogue'"><div class="fade-enter space-y-6 max-w-7xl mx-auto">
+
+        <div class="grid grid-cols-4 gap-4">
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Produits actifs</p><p class="text-2xl font-extrabold">6</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +1 vs mois dernier</p></div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Variantes totales</p><p class="text-2xl font-extrabold">88</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +6 vs mois dernier</p></div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Marge moyenne</p><p class="text-2xl font-extrabold text-accent-dark">38,2%</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +1,4 pt vs mois dernier</p></div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Ruptures de stock</p><p class="text-2xl font-extrabold text-rose-500">1</p><p class="text-xs text-rose-500 font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +1 vs mois dernier</p></div>
+        </div>
+
+        <div class="grid grid-cols-3 gap-4">
+          <template x-for="p in catalogProducts" :key="p.id">
+            <div class="bg-white rounded-xl border border-gray-200 shadow-card overflow-hidden flex flex-col">
+              <img :src="p.image" class="w-full h-40 object-cover">
+              <div class="p-4 flex-1 flex flex-col">
+                <div class="flex items-start justify-between gap-2 mb-1">
+                  <h3 class="font-bold text-sm text-ink-900" x-text="p.name"></h3>
+                  <span class="tag-pill flex-shrink-0"
+                    :class="p.stock==='disponible' ? 'bg-accent-light text-accent-dark' : (p.stock==='stock_faible' ? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-600')"
+                    x-text="p.stock==='disponible' ? 'Disponible' : (p.stock==='stock_faible' ? 'Stock faible' : 'Rupture')"></span>
+                </div>
+                <p class="text-xs text-gray-500 mb-3" x-text="p.variantsCount + ' variantes · ' + p.supplier"></p>
+                <div class="grid grid-cols-2 gap-2 text-xs mb-3">
+                  <div><p class="text-gray-400">Prix</p><p class="font-semibold" x-text="p.priceMin.toFixed(2)+' – '+p.priceMax.toFixed(2)+' €'"></p></div>
+                  <div><p class="text-gray-400">Marge nette</p><p class="font-semibold text-accent-dark" x-text="p.margin+'%'"></p></div>
+                </div>
+                <div class="flex items-center justify-between mb-4">
+                  <p class="text-[11px] text-gray-400 font-semibold uppercase tracking-wide">Tendance 7j</p>
+                  <div x-html="sparklineSvg(sparkData[p.id])"></div>
+                </div>
+                <button @click="openProductModal(p)" class="mt-auto w-full bg-ink-900 hover:bg-ink-700 text-white text-xs font-semibold py-2 rounded-lg transition">Voir fiche complète</button>
+              </div>
+            </div>
+          </template>
+        </div>
+
+        <!-- Modal fiche produit -->
+        <template x-if="selectedProduct">
+          <div @click="closeProductModal()" @keydown.escape.window="closeProductModal()" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md">
+            <div @click.stop class="bg-white rounded-2xl w-full max-w-4xl max-h-[92vh] overflow-y-auto scrollbar-thin">
+              <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100 sticky top-0 bg-white z-10">
+                <h2 class="font-bold text-lg text-ink-900" x-text="selectedProduct.name"></h2>
+                <button @click="closeProductModal()" class="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-500"><i class="fa-solid fa-xmark"></i></button>
+              </div>
+
+              <div class="p-6 space-y-6">
+                <!-- Galerie -->
+                <div class="relative rounded-xl overflow-hidden bg-gray-100">
+                  <img :src="selectedProduct.images[galleryIndex]" class="w-full h-80 object-cover">
+                  <button @click="prevImage()" class="absolute left-3 top-1/2 -translate-y-1/2 w-9 h-9 rounded-full bg-white/90 hover:bg-white flex items-center justify-center shadow"><i class="fa-solid fa-chevron-left"></i></button>
+                  <button @click="nextImage()" class="absolute right-3 top-1/2 -translate-y-1/2 w-9 h-9 rounded-full bg-white/90 hover:bg-white flex items-center justify-center shadow"><i class="fa-solid fa-chevron-right"></i></button>
+                  <div class="absolute bottom-3 left-1/2 -translate-x-1/2 flex gap-1.5">
+                    <template x-for="(img, i) in selectedProduct.images" :key="i">
+                      <button @click="galleryIndex = i" class="w-2 h-2 rounded-full" :class="galleryIndex===i ? 'bg-white' : 'bg-white/50'"></button>
+                    </template>
+                  </div>
+                  <span class="absolute top-3 right-3 bg-black/50 text-white text-[11px] font-semibold px-2 py-0.5 rounded-full" x-text="(galleryIndex+1)+' / '+selectedProduct.images.length"></span>
+                </div>
+
+                <!-- Description + tags -->
+                <div>
+                  <h3 class="font-bold text-sm text-ink-900 mb-2">Description</h3>
+                  <p class="text-sm text-gray-600 leading-relaxed" x-text="selectedProduct.description"></p>
+                  <h4 class="font-bold text-xs text-ink-900 mt-4 mb-2">13 tags Etsy</h4>
+                  <div class="flex flex-wrap gap-1.5">
+                    <template x-for="t in selectedProduct.tags" :key="t">
+                      <span class="tag-pill bg-gray-100 text-gray-700" x-text="t"></span>
+                    </template>
+                  </div>
+                </div>
+
+                <!-- Listing Quality Score -->
+                <div class="border border-gray-100 rounded-xl p-4">
+                  <h3 class="font-bold text-sm text-ink-900">Listing Quality Score</h3>
+                  <p class="text-xs text-gray-500 mb-3" x-text="selectedProduct.name"></p>
+
+                  <div class="relative w-48 h-28 mx-auto mb-2">
+                    <svg viewBox="0 0 200 110" class="w-full h-full">
+                      <path class="lqs-bg" d="M20,100 A80,80 0 0,1 180,100" fill="none" stroke-width="14" stroke-linecap="round"></path>
+                      <path d="M20,100 A80,80 0 0,1 180,100" fill="none" :stroke="lqsColor(lqsScore)" stroke-width="14" stroke-linecap="round"
+                            stroke-dasharray="251.33" :stroke-dashoffset="lqsArcOffset(lqsScore)" style="transition: stroke-dashoffset .6s ease, stroke .3s ease;"></path>
+                    </svg>
+                    <div class="absolute inset-0 flex flex-col items-center justify-end pb-1">
+                      <span class="text-3xl font-extrabold text-ink-900 num" x-text="lqsScore"></span>
+                      <span class="text-[11px] text-gray-400 font-semibold">/ 100</span>
+                    </div>
+                  </div>
+
+                  <div class="grid grid-cols-3 gap-4">
+                    <template x-for="section in lqsChecks" :key="section.section">
+                      <div>
+                        <p class="text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5" x-text="section.section"></p>
+                        <div class="space-y-1.5">
+                          <template x-for="(item, i) in section.items" :key="i">
+                            <div class="flex items-center gap-2 text-xs">
+                              <i class="fa-solid" :class="item.status==='ok' ? 'fa-circle-check text-accent-dark' : (item.status==='warning' ? 'fa-triangle-exclamation text-amber-500' : 'fa-circle-xmark text-rose-500')"></i>
+                              <span x-text="item.text"></span>
+                            </div>
+                          </template>
+                        </div>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+
+                <!-- Variantes -->
+                <div>
+                  <h3 class="font-bold text-sm text-ink-900 mb-2">Variantes</h3>
+                  <div class="overflow-x-auto">
+                  <table class="w-full text-sm">
+                    <thead><tr class="text-left text-xs text-gray-500 border-b border-gray-100"><th class="pb-2 font-semibold">Couleur</th><th class="pb-2 font-semibold">Taille</th><th class="pb-2 font-semibold">Gravure</th><th class="pb-2 font-semibold">Prix fournisseur</th></tr></thead>
+                    <tbody class="divide-y divide-gray-50">
+                      <template x-for="(v, i) in selectedProduct.variants" :key="i">
+                        <tr><td class="py-2" x-text="v.color"></td><td x-text="v.size"></td><td x-text="v.engraving"></td><td class="font-semibold" x-text="v.supplierPrice.toFixed(2)+' €'"></td></tr>
+                      </template>
+                    </tbody>
+                  </table>
+                  </div>
+                </div>
+
+                <!-- Prix par pays -->
+                <div>
+                  <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
+                    <h3 class="font-bold text-sm text-ink-900">Prix par pays</h3>
+                    <label class="flex items-center gap-2 text-xs font-semibold text-gray-600 cursor-pointer select-none">
+                      <input type="checkbox" x-model="selectedProduct.freeShipping" class="accent-accent w-4 h-4">
+                      Livraison gratuite (recalcule le prix pour 35% de marge)
+                    </label>
+                  </div>
+                  <div class="overflow-x-auto">
+                  <table class="w-full text-sm min-w-[760px]">
+                    <thead><tr class="text-left text-xs text-gray-500 border-b border-gray-100">
+                      <th class="pb-2 font-semibold">Pays</th><th class="pb-2 font-semibold">Prix recommandé</th><th class="pb-2 font-semibold">TVA locale</th><th class="pb-2 font-semibold">Frais Etsy</th><th class="pb-2 font-semibold">Livraison</th><th class="pb-2 font-semibold">Frais de change (1,8%)</th><th class="pb-2 font-semibold">Marge nette réelle</th>
+                    </tr></thead>
+                    <tbody class="divide-y divide-gray-50">
+                      <template x-for="row in countryPricingRows(selectedProduct)" :key="row.code">
+                        <tr>
+                          <td class="py-2 font-medium" x-text="row.flag+' '+row.name"></td>
+                          <td class="font-semibold" x-text="row.price.toFixed(2)+' €'"></td>
+                          <td x-text="row.vat"></td>
+                          <td x-text="row.etsyFee.toFixed(2)+' €'"></td>
+                          <td x-text="row.shipping==='Gratuite' ? 'Gratuite' : row.shipping.toFixed(2)+' €'"></td>
+                          <td x-text="row.changeFee.toFixed(2)+' €'"></td>
+                          <td class="font-bold" :class="row.marginPct>=25?'text-accent-dark':(row.marginPct>=15?'text-amber-600':'text-rose-500')" x-text="row.marginEur.toFixed(2)+' € ('+row.marginPct.toFixed(1)+'%)'"></td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                  </div>
+                </div>
+
+                <!-- Fournisseurs -->
+                <div>
+                  <h3 class="font-bold text-sm text-ink-900 mb-2">Fournisseurs</h3>
+                  <div class="grid grid-cols-4 gap-2">
+                    <template x-for="s in selectedProduct.suppliers" :key="s.name">
+                      <div class="border rounded-lg p-3" :class="s.available ? (s.name===selectedProduct.supplier ? 'border-accent bg-accent-light' : 'border-gray-200') : 'border-gray-100 opacity-40'">
+                        <p class="text-xs font-bold text-ink-900" x-text="s.name"></p>
+                        <p class="text-xs text-gray-500 mt-1" x-text="s.available ? s.price.toFixed(2)+' € · '+s.delay : 'Non disponible'"></p>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+
+                <!-- Générer fiche -->
+                <div class="border-t border-gray-100 pt-5">
+                  <button @click="generatedListingVisible = !generatedListingVisible" class="bg-accent hover:bg-accent-dark text-ink-900 font-bold text-sm px-4 py-2 rounded-lg transition"><i class="fa-solid fa-wand-magic-sparkles mr-1.5"></i>Générer fiche Etsy</button>
+                  <div x-show="generatedListingVisible" x-cloak class="mt-4 space-y-3">
+                    <div>
+                      <p class="text-xs font-bold text-gray-500 mb-1">Titre (140 car.)</p>
+                      <p class="text-sm bg-gray-50 border border-gray-100 rounded-lg p-2.5" x-text="generatedTitle(selectedProduct)"></p>
+                    </div>
+                    <div>
+                      <p class="text-xs font-bold text-gray-500 mb-1">Description (2000 car.)</p>
+                      <p class="text-sm bg-gray-50 border border-gray-100 rounded-lg p-2.5 leading-relaxed" x-text="generatedDescription(selectedProduct)"></p>
+                    </div>
+                    <div>
+                      <p class="text-xs font-bold text-gray-500 mb-1">13 tags</p>
+                      <div class="flex flex-wrap gap-1.5">
+                        <template x-for="t in selectedProduct.tags" :key="'gen-'+t">
+                          <span class="tag-pill bg-gray-100 text-gray-700" x-text="t"></span>
+                        </template>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </template>
+      </div></template>
+
+      <!-- ================= SOURCING ================= -->
+      <template x-if="page==='sourcing'"><div class="fade-enter space-y-6 max-w-7xl mx-auto">
+
+        <div class="grid grid-cols-4 gap-4">
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Sources connectées</p><p class="text-2xl font-extrabold">7 / 7</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +1 vs mois dernier</p></div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Produits comparés</p><p class="text-2xl font-extrabold">1 284</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +142 vs mois dernier</p></div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Marge moyenne</p><p class="text-2xl font-extrabold text-accent-dark">40,2%</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +0,8 pt vs mois dernier</p></div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Alertes stock</p><p class="text-2xl font-extrabold text-rose-500">3</p><p class="text-xs text-rose-500 font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +1 vs mois dernier</p></div>
+        </div>
+
+        <div class="bg-white rounded-xl border border-gray-200 shadow-card">
+          <div class="flex items-center justify-between p-5 pb-0">
+            <div>
+              <h3 class="font-bold text-sm text-ink-900">Comparateur de prix multi-sources</h3>
+              <p class="text-xs text-gray-500 mt-0.5">Marge calculée après frais Etsy (6,5% + 0,20 €) et livraison estimée.</p>
+            </div>
+            <div class="flex gap-2">
+              <button class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50">Filtrer par marge ▾</button>
+              <button class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-ink-900 text-white hover:bg-ink-700"><i class="fa-solid fa-plus mr-1"></i>Importer un produit</button>
+            </div>
+          </div>
+          <div class="overflow-x-auto p-5">
+          <table class="w-full text-sm min-w-[900px]">
+            <thead><tr class="text-left text-xs text-gray-500 border-b border-gray-100">
+              <th class="pb-2 font-semibold">Produit</th>
+              <th class="pb-2 font-semibold">Mon catalogue</th>
+              <th class="pb-2 font-semibold">Eprolo</th>
+              <th class="pb-2 font-semibold">CJ Dropshipping</th>
+              <th class="pb-2 font-semibold">Printify</th>
+              <th class="pb-2 font-semibold">Zendrop</th>
+              <th class="pb-2 font-semibold">Meilleur coût</th>
+              <th class="pb-2 font-semibold">Prix vente</th>
+              <th class="pb-2 font-semibold">Marge nette</th>
+              <th class="pb-2 font-semibold"></th>
+            </tr></thead>
+            <tbody class="divide-y divide-gray-50">
+              <tr>
+                <td class="py-3 flex items-center gap-2 font-medium"><img src="https://picsum.photos/seed/necklace1/32" class="w-8 h-8 rounded-lg object-cover">Collier prénom plaqué or</td>
+                <td class="font-semibold text-accent-dark">4,20 €</td><td class="text-gray-400">5,10 €</td><td class="text-gray-400">4,85 €</td><td class="text-gray-400">—</td><td class="text-gray-400">5,40 €</td>
+                <td><span class="tag-pill bg-accent-light text-accent-dark">Mon catalogue</span></td><td class="font-semibold">24,90 €</td>
+                <td><span class="tag-pill bg-accent-light text-accent-dark">46%</span></td>
+                <td><button class="text-xs font-semibold text-accent hover:underline">Publier →</button></td>
+              </tr>
+              <tr>
+                <td class="py-3 flex items-center gap-2 font-medium"><img src="https://picsum.photos/seed/bracelet2/32" class="w-8 h-8 rounded-lg object-cover">Bracelet initiales gravées</td>
+                <td class="font-semibold text-accent-dark">3,80 €</td><td class="text-gray-400">4,60 €</td><td class="text-gray-400">4,10 €</td><td class="text-gray-400">—</td><td class="text-gray-400">4,95 €</td>
+                <td><span class="tag-pill bg-accent-light text-accent-dark">Mon catalogue</span></td><td class="font-semibold">18,90 €</td>
+                <td><span class="tag-pill bg-accent-light text-accent-dark">42%</span></td>
+                <td><button class="text-xs font-semibold text-accent hover:underline">Publier →</button></td>
+              </tr>
+              <tr>
+                <td class="py-3 flex items-center gap-2 font-medium"><img src="https://picsum.photos/seed/ring3/32" class="w-8 h-8 rounded-lg object-cover">Bague prénom ajustable</td>
+                <td class="text-gray-400">—</td><td class="font-semibold text-rose-500">6,20 € <i class="fa-solid fa-triangle-exclamation text-[10px]"></i></td><td class="font-semibold text-accent-dark">5,45 €</td><td class="text-gray-400">—</td><td class="text-gray-400">6,80 €</td>
+                <td><span class="tag-pill bg-blue-50 text-blue-600">CJ Dropshipping</span></td><td class="font-semibold">20,40 €</td>
+                <td><span class="tag-pill bg-amber-100 text-amber-700">31%</span></td>
+                <td><button class="text-xs font-semibold text-accent hover:underline">Publier →</button></td>
+              </tr>
+              <tr>
+                <td class="py-3 flex items-center gap-2 font-medium"><img src="https://picsum.photos/seed/mug5/32" class="w-8 h-8 rounded-lg object-cover">Mug personnalisé prénom</td>
+                <td class="text-gray-400">—</td><td class="text-gray-400">—</td><td class="text-gray-400">—</td><td class="font-semibold text-accent-dark">7,90 €</td><td class="text-gray-400">—</td>
+                <td><span class="tag-pill bg-purple-50 text-purple-600">Printify (POD)</span></td><td class="font-semibold">19,90 €</td>
+                <td><span class="tag-pill bg-accent-light text-accent-dark">38%</span></td>
+                <td><button class="text-xs font-semibold text-accent hover:underline">Publier →</button></td>
+              </tr>
+              <tr>
+                <td class="py-3 flex items-center gap-2 font-medium"><img src="https://picsum.photos/seed/earrings4/32" class="w-8 h-8 rounded-lg object-cover">Boucles d'oreilles constellation</td>
+                <td class="font-semibold text-accent-dark">4,50 €</td><td class="text-gray-400">5,20 €</td><td class="text-gray-400">4,95 €</td><td class="text-gray-400">—</td><td class="text-gray-400">5,60 €</td>
+                <td><span class="tag-pill bg-accent-light text-accent-dark">Mon catalogue</span></td><td class="font-semibold">21,90 €</td>
+                <td><span class="tag-pill bg-accent-light text-accent-dark">39%</span></td>
+                <td><button class="text-xs font-semibold text-accent hover:underline">Publier →</button></td>
+              </tr>
+              <tr class="opacity-60">
+                <td class="py-3 flex items-center gap-2 font-medium"><img src="https://picsum.photos/seed/anklet6/32" class="w-8 h-8 rounded-lg object-cover">Chaîne de cheville gravée</td>
+                <td class="text-gray-400">—</td><td class="font-semibold text-rose-500">Rupture</td><td class="text-gray-400">5,90 €</td><td class="text-gray-400">—</td><td class="text-gray-400">6,10 €</td>
+                <td><span class="tag-pill bg-blue-50 text-blue-600">CJ Dropshipping</span></td><td class="font-semibold">17,90 €</td>
+                <td><span class="tag-pill bg-amber-100 text-amber-700">33%</span></td>
+                <td><button class="text-xs font-semibold text-accent hover:underline">Publier →</button></td>
+              </tr>
+            </tbody>
+          </table>
+          </div>
+        </div>
+      </div></template>
+
+      <!-- ================= ORDERS ================= -->
+      <template x-if="page==='orders'"><div class="fade-enter space-y-6 max-w-7xl mx-auto">
+
+        <div class="grid grid-cols-5 gap-4">
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Total (30j)</p><p class="text-xl font-extrabold">342</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +9,6% vs mois dernier</p></div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Auto-transmises</p><p class="text-xl font-extrabold text-accent-dark">336</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +11 vs mois dernier</p></div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">En attente fournisseur</p><p class="text-xl font-extrabold text-amber-500">12</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-down"></i> -3 vs mois dernier</p></div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Retards &gt;10j</p><p class="text-xl font-extrabold text-rose-500">6</p><p class="text-xs text-rose-500 font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +2 vs mois dernier</p></div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Retours/SAV</p><p class="text-xl font-extrabold">4</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-down"></i> -1 vs mois dernier</p></div>
+        </div>
+
+        <div class="bg-white rounded-xl border border-gray-200 shadow-card">
+          <div class="flex items-center justify-between p-5 pb-4">
+            <h3 class="font-bold text-sm text-ink-900">Commandes Etsy — flux de fulfillment</h3>
+            <div class="flex gap-2 text-xs font-semibold">
+              <button class="px-3 py-1.5 rounded-lg bg-ink-900 text-white">Toutes</button>
+              <button class="px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50">En attente</button>
+              <button class="px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50">Retard</button>
+            </div>
+          </div>
+          <div class="overflow-x-auto px-5 pb-5">
+          <table class="w-full text-sm min-w-[920px]">
+            <thead><tr class="text-left text-xs text-gray-500 border-b border-gray-100">
+              <th class="pb-2 font-semibold">Commande</th><th class="pb-2 font-semibold">Client</th><th class="pb-2 font-semibold">Produit</th><th class="pb-2 font-semibold">Fournisseur</th><th class="pb-2 font-semibold">Montant</th><th class="pb-2 font-semibold">Statut</th><th class="pb-2 font-semibold">Suivi</th>
+            </tr></thead>
+            <tbody class="divide-y divide-gray-50">
+              <tr><td class="py-3 font-medium">#EY-88213</td><td>Claire M.</td><td>Collier prénom "Emma"</td><td>Mon catalogue</td><td class="font-semibold">24,90 €</td><td><span class="tag-pill bg-accent-light text-accent-dark">Livrée</span></td><td class="text-gray-400 font-mono text-xs">FR..8823JT</td></tr>
+              <tr><td class="py-3 font-medium">#EY-88214</td><td>Julien P.</td><td>Bracelet initiales "J&amp;L"</td><td>Mon catalogue</td><td class="font-semibold">18,90 €</td><td><span class="tag-pill bg-blue-50 text-blue-600">En transit</span></td><td class="text-gray-400 font-mono text-xs">FR..2291KX</td></tr>
+              <tr><td class="py-3 font-medium">#EY-88215</td><td>Sarah T.</td><td>Bague prénom ajustable</td><td>CJ Dropshipping</td><td class="font-semibold">20,40 €</td><td><span class="tag-pill bg-amber-100 text-amber-700">En attente fournisseur</span></td><td class="text-gray-400 font-mono text-xs">—</td></tr>
+              <tr class="bg-rose-50/40"><td class="py-3 font-medium">#EY-88190</td><td>Marc D.</td><td>Chaîne de cheville gravée</td><td>CJ Dropshipping</td><td class="font-semibold">17,90 €</td><td><span class="tag-pill bg-rose-100 text-rose-600">Retard 14j</span></td><td class="text-gray-400 font-mono text-xs">CN..7745QP</td></tr>
+              <tr><td class="py-3 font-medium">#EY-88216</td><td>Léa B.</td><td>Mug personnalisé prénom</td><td>Printify</td><td class="font-semibold">19,90 €</td><td><span class="tag-pill bg-accent-light text-accent-dark">Livrée</span></td><td class="text-gray-400 font-mono text-xs">FR..9013MZ</td></tr>
+              <tr><td class="py-3 font-medium">#EY-88217</td><td>Thomas R.</td><td>Boucles d'oreilles constellation</td><td>Mon catalogue</td><td class="font-semibold">21,90 €</td><td><span class="tag-pill bg-blue-50 text-blue-600">En transit</span></td><td class="text-gray-400 font-mono text-xs">FR..4471AL</td></tr>
+              <tr class="bg-purple-50/40"><td class="py-3 font-medium">#EY-88180</td><td>Inès K.</td><td>Collier zodiaque "Lion"</td><td>Eprolo</td><td class="font-semibold">22,90 €</td><td><span class="tag-pill bg-purple-100 text-purple-600">Retour demandé</span></td><td class="text-gray-400 font-mono text-xs">FR..0032WD</td></tr>
+            </tbody>
+          </table>
+          </div>
+        </div>
+      </div></template>
+
+      <!-- ================= SEO ================= -->
+      <template x-if="page==='seo'"><div class="fade-enter space-y-6 max-w-7xl mx-auto">
+
+        <div class="grid grid-cols-3 gap-4">
+          <div class="col-span-2 bg-white rounded-xl border border-gray-200 shadow-card p-5">
+            <h3 class="font-bold text-sm text-ink-900 mb-3">Recherche de mots-clés</h3>
+            <div class="flex gap-2 mb-4">
+              <input type="text" value="collier prénom personnalisé" class="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-accent">
+              <button class="bg-accent text-ink-900 font-bold text-sm px-4 py-2 rounded-lg hover:bg-accent-dark">Analyser</button>
+            </div>
+            <table class="w-full text-sm">
+              <thead><tr class="text-left text-xs text-gray-500 border-b border-gray-100">
+                <th class="pb-2 font-semibold">Mot-clé</th>
+                <th class="pb-2 font-semibold">Volume est.</th>
+                <th class="pb-2 font-semibold">
+                  <span class="relative inline-flex items-center gap-1 group cursor-help">
+                    Ventes totales <i class="fa-solid fa-circle-info text-gray-300 text-[10px]"></i>
+                    <span class="pointer-events-none absolute left-0 bottom-full mb-2 hidden group-hover:block w-56 bg-ink-900 text-white text-[11px] font-normal normal-case leading-relaxed rounded-lg px-2.5 py-2 shadow-lg z-20">
+                      Total des ventes Etsy de tous les produits utilisant ce mot-clé sur les 30 derniers jours
+                    </span>
+                  </span>
+                </th>
+                <th class="pb-2 font-semibold">Compétition</th>
+                <th class="pb-2 font-semibold">Tendance</th>
+                <th class="pb-2 font-semibold text-right">Score</th>
+              </tr></thead>
+              <tbody class="divide-y divide-gray-50">
+                <tr><td class="py-2.5 font-medium">collier prénom personnalisé</td><td>4 200/mois</td><td class="font-semibold">184 500</td><td><span class="tag-pill bg-amber-100 text-amber-700">Moyen</span></td><td class="text-accent-dark font-semibold"><i class="fa-solid fa-arrow-trend-up"></i> +12%</td><td class="text-right"><span class="tag-pill bg-accent-light text-accent-dark">82/100</span></td></tr>
+                <tr><td class="py-2.5 font-medium">bijou personnalisé cadeau maman</td><td>2 900/mois</td><td class="font-semibold">97 200</td><td><span class="tag-pill bg-accent-light text-accent-dark">Faible</span></td><td class="text-accent-dark font-semibold"><i class="fa-solid fa-arrow-trend-up"></i> +34%</td><td class="text-right"><span class="tag-pill bg-accent-light text-accent-dark">91/100</span></td></tr>
+                <tr><td class="py-2.5 font-medium">bracelet initiales gravé</td><td>1 800/mois</td><td class="font-semibold">63 800</td><td><span class="tag-pill bg-amber-100 text-amber-700">Moyen</span></td><td class="text-gray-500 font-semibold"><i class="fa-solid fa-minus"></i> stable</td><td class="text-right"><span class="tag-pill bg-amber-100 text-amber-700">74/100</span></td></tr>
+                <tr><td class="py-2.5 font-medium">collier signe astro</td><td>3 100/mois</td><td class="font-semibold">228 400</td><td><span class="tag-pill bg-rose-100 text-rose-600">Élevé</span></td><td class="text-rose-500 font-semibold"><i class="fa-solid fa-arrow-trend-down"></i> -8%</td><td class="text-right"><span class="tag-pill bg-rose-100 text-rose-600">58/100</span></td></tr>
+                <tr><td class="py-2.5 font-medium">cadeau demoiselle d'honneur bijou</td><td>1 200/mois</td><td class="font-semibold">41 600</td><td><span class="tag-pill bg-accent-light text-accent-dark">Faible</span></td><td class="text-accent-dark font-semibold"><i class="fa-solid fa-arrow-trend-up"></i> +21%</td><td class="text-right"><span class="tag-pill bg-accent-light text-accent-dark">88/100</span></td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-5">
+            <h3 class="font-bold text-sm text-ink-900">Listing Quality Score</h3>
+            <p class="text-xs text-gray-500 mb-3">Collier prénom plaqué or</p>
+
+            <div class="relative w-48 h-28 mx-auto mb-2">
+              <svg viewBox="0 0 200 110" class="w-full h-full">
+                <path class="lqs-bg" d="M20,100 A80,80 0 0,1 180,100" fill="none" stroke-width="14" stroke-linecap="round"></path>
+                <path d="M20,100 A80,80 0 0,1 180,100" fill="none" :stroke="lqsColor(lqsScore)" stroke-width="14" stroke-linecap="round"
+                      stroke-dasharray="251.33" :stroke-dashoffset="lqsArcOffset(lqsScore)" style="transition: stroke-dashoffset .6s ease, stroke .3s ease;"></path>
+              </svg>
+              <div class="absolute inset-0 flex flex-col items-center justify-end pb-1">
+                <span class="text-3xl font-extrabold text-ink-900 num" x-text="lqsScore"></span>
+                <span class="text-[11px] text-gray-400 font-semibold">/ 100</span>
+              </div>
+            </div>
+
+            <div class="space-y-4">
+              <template x-for="section in lqsChecks" :key="section.section">
+                <div>
+                  <p class="text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5" x-text="section.section"></p>
+                  <div class="space-y-1.5">
+                    <template x-for="(item, i) in section.items" :key="i">
+                      <div class="flex items-center gap-2 text-xs">
+                        <i class="fa-solid" :class="item.status==='ok' ? 'fa-circle-check text-accent-dark' : (item.status==='warning' ? 'fa-triangle-exclamation text-amber-500' : 'fa-circle-xmark text-rose-500')"></i>
+                        <span x-text="item.text"></span>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+        </div>
+      </div></template>
+
+      <!-- ================= COMPETITORS ================= -->
+      <template x-if="page==='competitors'"><div class="fade-enter space-y-6 max-w-7xl mx-auto">
+
+        <div class="bg-white rounded-xl border border-gray-200 shadow-card p-5">
+          <h3 class="font-bold text-sm text-ink-900 mb-3">Analyser une fiche ou boutique concurrente</h3>
+          <div class="flex gap-2">
+            <input type="text" value="https://www.etsy.com/shop/NomShopConcurrent" class="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-accent">
+            <button class="bg-ink-900 text-white font-semibold text-sm px-4 py-2 rounded-lg hover:bg-ink-700">Analyser</button>
+          </div>
+        </div>
+
+        <!-- Shop Analyzer result -->
+        <div class="bg-white rounded-xl border border-gray-200 shadow-card p-5 space-y-6">
+          <div class="flex flex-wrap items-center gap-4">
+            <div class="w-14 h-14 rounded-full bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center text-white font-bold text-lg flex-shrink-0">CM</div>
+            <div class="flex-1 min-w-[220px]">
+              <div class="flex items-center gap-2">
+                <h3 class="font-bold text-base text-ink-900">CaitlynMinimalist</h3>
+                <span class="text-lg leading-none">🇺🇸</span>
+              </div>
+              <p class="text-xs text-gray-500">Jewelry · Depuis 2014</p>
+              <div class="flex items-center gap-1.5 text-xs mt-1">
+                <span class="text-amber-400"><i class="fa-solid fa-star"></i><i class="fa-solid fa-star"></i><i class="fa-solid fa-star"></i><i class="fa-solid fa-star"></i><i class="fa-solid fa-star-half-stroke"></i></span>
+                <span class="text-gray-600 font-semibold">4,86 (532 041 avis)</span>
+              </div>
+            </div>
+            <div class="flex items-center gap-2">
+              <button @click="analyzerFollowing = !analyzerFollowing" class="text-xs font-bold px-4 py-2 rounded-lg transition" :class="analyzerFollowing ? 'bg-accent-light text-accent-dark' : 'bg-ink-900 text-white hover:bg-ink-700'">
+                <i class="fa-solid" :class="analyzerFollowing ? 'fa-check' : 'fa-plus'"></i> <span x-text="analyzerFollowing ? 'Suivi' : 'Follow'"></span>
+              </button>
+              <button class="w-9 h-9 flex items-center justify-center rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-500"><i class="fa-solid fa-arrow-up-right-from-square"></i></button>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-3 gap-4">
+            <div class="bg-gray-50 rounded-xl p-4">
+              <p class="text-xs font-semibold text-gray-500 mb-1">Ventes totales</p>
+              <p class="text-2xl font-extrabold text-ink-900 num">2 597 977</p>
+              <p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +23 426 ce mois</p>
+            </div>
+            <div class="bg-gray-50 rounded-xl p-4">
+              <p class="text-xs font-semibold text-gray-500 mb-1">Revenu estimé</p>
+              <p class="text-2xl font-extrabold text-ink-900 num">87 360 242 $</p>
+              <p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +789 508 $ ce mois</p>
+            </div>
+            <div class="bg-gray-50 rounded-xl p-4">
+              <p class="text-xs font-semibold text-gray-500 mb-1">Taux de conversion</p>
+              <p class="text-2xl font-extrabold text-ink-900 num">2,59%</p>
+              <p class="text-xs text-gray-400 font-semibold mt-1"><i class="fa-solid fa-minus"></i> Stable</p>
+            </div>
+          </div>
+
+          <div>
+            <h4 class="text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-3">Détails</h4>
+            <div class="grid grid-cols-2 gap-x-8 gap-y-0 text-sm">
+              <div class="flex justify-between border-b border-gray-50 py-2"><span class="text-gray-500">Ventes / mois</span><span class="font-semibold">23 426</span></div>
+              <div class="flex justify-between border-b border-gray-50 py-2"><span class="text-gray-500">Revenu / mois</span><span class="font-semibold">789 508 $</span></div>
+              <div class="flex justify-between border-b border-gray-50 py-2"><span class="text-gray-500">Ventes par fiche</span><span class="font-semibold">1 913</span></div>
+              <div class="flex justify-between border-b border-gray-50 py-2"><span class="text-gray-500">Prix moyen</span><span class="font-semibold">33,63 $</span></div>
+              <div class="flex justify-between py-2"><span class="text-gray-500">Fiches actives</span><span class="font-semibold">412</span></div>
+              <div class="flex justify-between py-2"><span class="text-gray-500">Ancienneté</span><span class="font-semibold">11 ans</span></div>
+            </div>
+          </div>
+
+          <div @dblclick="openFocusMode('chartCompetitorRevenue')" title="Double-clic pour agrandir" class="cursor-zoom-in">
+            <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
+              <h4 class="font-bold text-sm text-ink-900">Évolution du revenu — 12 mois</h4>
+              <div class="flex gap-1.5 text-xs font-semibold">
+                <button @click.stop="setAnalyzerRange('12m')" :class="analyzerRange==='12m' ? 'bg-ink-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'" class="px-3 py-1.5 rounded-lg transition">12 mois</button>
+                <button @click.stop="setAnalyzerRange('all')" :class="analyzerRange==='all' ? 'bg-ink-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'" class="px-3 py-1.5 rounded-lg transition">All time</button>
+              </div>
+            </div>
+            <canvas id="chartCompetitorRevenue" height="90"></canvas>
+          </div>
+
+          <div>
+            <h4 class="font-bold text-sm text-ink-900 mb-3">Top 5 fiches détectées</h4>
+            <div class="overflow-x-auto">
+            <table class="w-full text-sm min-w-[560px]">
+              <thead><tr class="text-left text-xs text-gray-500 border-b border-gray-100"><th class="pb-2 font-semibold"></th><th class="pb-2 font-semibold">Fiche</th><th class="pb-2 font-semibold">Ventes est./mois</th><th class="pb-2 font-semibold">Revenu est.</th><th class="pb-2 font-semibold">Favoris</th><th class="pb-2 font-semibold"></th></tr></thead>
+              <tbody class="divide-y divide-gray-50">
+                <template x-for="l in analyzerListings" :key="l.title">
+                  <tr>
+                    <td class="py-2.5"><img :src="l.image" class="w-8 h-8 rounded-lg object-cover"></td>
+                    <td class="font-medium" x-text="l.title"></td>
+                    <td x-text="l.sales.toLocaleString('fr-FR')"></td>
+                    <td class="font-semibold" x-text="l.revenue.toLocaleString('fr-FR')+' $'"></td>
+                    <td x-text="l.favorites.toLocaleString('fr-FR')"></td>
+                    <td><button class="text-xs font-semibold text-accent hover:underline">Analyser →</button></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="bg-white rounded-xl border border-gray-200 shadow-card">
+          <div class="flex items-center justify-between p-5 pb-4">
+            <h3 class="font-bold text-sm text-ink-900">Watchlist concurrents</h3>
+            <button class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50"><i class="fa-solid fa-plus mr-1"></i>Ajouter une fiche</button>
+          </div>
+          <div class="overflow-x-auto px-5 pb-5">
+          <table class="w-full text-sm min-w-[880px]">
+            <thead><tr class="text-left text-xs text-gray-500 border-b border-gray-100">
+              <th class="pb-2 font-semibold">Boutique / Fiche</th><th class="pb-2 font-semibold">Prix</th><th class="pb-2 font-semibold">Favoris</th><th class="pb-2 font-semibold">Ventes est./mois</th><th class="pb-2 font-semibold">Tags</th><th class="pb-2 font-semibold">Alerte</th>
+            </tr></thead>
+            <tbody class="divide-y divide-gray-50">
+              <tr><td class="py-3 font-medium">GoldenNameJewelry</td><td>26,50 €</td><td>12 400</td><td class="font-semibold">~410</td><td>13/13</td><td><span class="tag-pill bg-rose-100 text-rose-600"><i class="fa-solid fa-arrow-down"></i> -3,00 € hier</span></td></tr>
+              <tr><td class="py-3 font-medium">PersonalizedByLuna</td><td>22,90 €</td><td>8 100</td><td class="font-semibold">~290</td><td>11/13</td><td><span class="tag-pill bg-gray-100 text-gray-500">Stable</span></td></tr>
+              <tr><td class="py-3 font-medium">CharmAndCoStudio</td><td>29,00 €</td><td>19 800</td><td class="font-semibold">~540</td><td>13/13</td><td><span class="tag-pill bg-amber-100 text-amber-700">Nouveau listing détecté</span></td></tr>
+              <tr><td class="py-3 font-medium">MinimalNameCo</td><td>18,90 €</td><td>5 600</td><td class="font-semibold">~180</td><td>9/13</td><td><span class="tag-pill bg-gray-100 text-gray-500">Stable</span></td></tr>
+            </tbody>
+          </table>
+          </div>
+        </div>
+
+        <div class="bg-white rounded-xl border border-gray-200 shadow-card p-5">
+          <h3 class="font-bold text-sm text-ink-900 mb-1">Gap d'opportunité</h3>
+          <p class="text-xs text-gray-500 mb-4">Ce que les concurrents ne couvrent pas sur "bijou personnalisé".</p>
+          <div class="grid grid-cols-3 gap-3">
+            <div class="border border-gray-100 rounded-lg p-3"><p class="font-semibold text-sm">Gravure braille</p><p class="text-xs text-gray-500 mt-1">0 concurrent sur 42 fiches analysées</p></div>
+            <div class="border border-gray-100 rounded-lg p-3"><p class="font-semibold text-sm">Packaging éco-responsable</p><p class="text-xs text-gray-500 mt-1">Mentionné dans 3/42 fiches seulement</p></div>
+            <div class="border border-gray-100 rounded-lg p-3"><p class="font-semibold text-sm">Tailles grande taille</p><p class="text-xs text-gray-500 mt-1">Absent chez 38/42 concurrents</p></div>
+          </div>
+        </div>
+      </div></template>
+
+      <!-- ================= ANALYTICS ================= -->
+      <template x-if="page==='analytics'"><div class="fade-enter space-y-6 max-w-7xl mx-auto">
+
+        <div class="grid grid-cols-4 gap-4">
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Revenu (année)</p><p class="text-xl font-extrabold num">61 240 €</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +18,4% vs mois dernier</p></div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Marge nette moyenne</p><p class="text-xl font-extrabold text-accent-dark">41,8%</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +2,1 pt vs mois dernier</p></div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Taux conversion moyen</p><p class="text-xl font-extrabold">3,8%</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +0,3 pt vs mois dernier</p></div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Bénéfice réel (année)</p><p class="text-xl font-extrabold num">25 598 €</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +21,2% vs mois dernier</p></div>
+        </div>
+
+        <div class="grid grid-cols-3 gap-4">
+          <div @dblclick="openFocusMode('chartAnalyticsMain')" title="Double-clic pour agrandir" class="col-span-2 bg-white rounded-xl border border-gray-200 shadow-card p-5 cursor-zoom-in">
+            <h3 class="font-bold text-sm text-ink-900 mb-4">Revenus vs bénéfice net — 12 mois</h3>
+            <canvas id="chartAnalyticsMain" height="110"></canvas>
+          </div>
+          <div @dblclick="openFocusMode('chartTraffic')" title="Double-clic pour agrandir" class="bg-white rounded-xl border border-gray-200 shadow-card p-5 cursor-zoom-in">
+            <h3 class="font-bold text-sm text-ink-900 mb-4">Sources de trafic</h3>
+            <canvas id="chartTraffic" height="150"></canvas>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-4">
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-5">
+            <h3 class="font-bold text-sm text-ink-900 mb-4">Taux de conversion par fiche</h3>
+            <table class="w-full text-sm">
+              <thead><tr class="text-left text-xs text-gray-500 border-b border-gray-100"><th class="pb-2 font-semibold">Fiche</th><th class="pb-2 font-semibold">Vues</th><th class="pb-2 font-semibold">Conversion</th></tr></thead>
+              <tbody class="divide-y divide-gray-50">
+                <tr><td class="py-2.5 font-medium">Collier prénom plaqué or</td><td>3 240</td><td class="font-semibold text-accent-dark">5,2%</td></tr>
+                <tr><td class="py-2.5 font-medium">Bracelet initiales gravées</td><td>2 180</td><td class="font-semibold text-accent-dark">4,4%</td></tr>
+                <tr><td class="py-2.5 font-medium">Bague prénom ajustable</td><td>2 910</td><td class="font-semibold text-amber-600">2,1%</td></tr>
+                <tr><td class="py-2.5 font-medium">Collier zodiaque "Lion"</td><td>1 640</td><td class="font-semibold text-rose-500">1,3%</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div @dblclick="openFocusMode('chartSupplierCost')" title="Double-clic pour agrandir" class="bg-white rounded-xl border border-gray-200 shadow-card p-5 cursor-zoom-in">
+            <h3 class="font-bold text-sm text-ink-900 mb-4">Coût moyen par fournisseur</h3>
+            <canvas id="chartSupplierCost" height="150"></canvas>
+          </div>
+        </div>
+      </div></template>
+
+      <!-- ================= AI ADVICE ================= -->
+      <template x-if="page==='ai'"><div class="fade-enter space-y-6 max-w-7xl mx-auto">
+
+        <div class="bg-gradient-to-br from-ink-900 to-ink-700 rounded-xl p-5 text-white">
+          <div class="flex items-center gap-2 mb-2"><i class="fa-solid fa-robot text-accent"></i><span class="font-bold text-sm">Rapport mensuel — Claude AI</span><span class="text-[10px] bg-white/10 px-2 py-0.5 rounded-full ml-auto">Généré le 1er sept. 2026</span></div>
+          <p class="text-sm text-gray-300 mb-4">Basé sur tes 342 commandes, 87 fiches actives et l'analyse de 12 concurrents ce mois-ci.</p>
+          <div class="grid grid-cols-3 gap-3">
+            <div class="bg-white/5 border border-white/10 rounded-lg p-3">
+              <p class="text-[11px] font-bold text-accent mb-1">PRIORITÉ 1</p>
+              <p class="text-sm font-semibold">Republier "Collier zodiaque" avec les tags de la fiche gap détectée</p>
+            </div>
+            <div class="bg-white/5 border border-white/10 rounded-lg p-3">
+              <p class="text-[11px] font-bold text-accent mb-1">PRIORITÉ 2</p>
+              <p class="text-sm font-semibold">Ajouter option "gravure braille" — 0 concurrent ne la propose</p>
+            </div>
+            <div class="bg-white/5 border border-white/10 rounded-lg p-3">
+              <p class="text-[11px] font-bold text-accent mb-1">PRIORITÉ 3</p>
+              <p class="text-sm font-semibold">Changer fournisseur bague vers CJ (marge +11 points)</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-4">
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-5">
+            <h3 class="font-bold text-sm text-ink-900 mb-3"><i class="fa-solid fa-lightbulb text-amber-400 mr-1.5"></i>Nouveaux produits suggérés</h3>
+            <div class="space-y-2 text-sm">
+              <div class="flex justify-between border-b border-gray-50 pb-2"><span>Bracelet cordon + breloque prénom</span><span class="text-accent-dark font-semibold">Score 89</span></div>
+              <div class="flex justify-between border-b border-gray-50 pb-2"><span>Collier duo mère-fille</span><span class="text-accent-dark font-semibold">Score 84</span></div>
+              <div class="flex justify-between"><span>Porte-clés gravé prénom + date</span><span class="text-accent-dark font-semibold">Score 77</span></div>
+            </div>
+          </div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-5">
+            <h3 class="font-bold text-sm text-ink-900 mb-3"><i class="fa-solid fa-bell text-rose-400 mr-1.5"></i>Alertes concurrentielles</h3>
+            <div class="space-y-2 text-sm text-gray-700">
+              <p>• <span class="font-semibold">CharmAndCoStudio</span> a lancé 4 nouvelles fiches sur "bijou fête des mères" cette semaine.</p>
+              <p>• <span class="font-semibold">GoldenNameJewelry</span> a baissé son prix de 3€ sur le collier prénom — surveille ta marge.</p>
+              <p>• Hausse de +34% de la demande sur "bijou personnalisé cadeau maman" détectée cette semaine.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="bg-white rounded-xl border border-gray-200 shadow-card flex flex-col" style="height: 420px;">
+          <div class="flex items-center gap-2 px-5 py-3 border-b border-gray-100 flex-shrink-0">
+            <i class="fa-solid fa-robot text-accent"></i>
+            <h3 class="font-bold text-sm text-ink-900">Discuter avec l'assistant IA</h3>
+            <span class="ml-auto text-[11px] text-gray-400">Réponses simulées — démo</span>
+          </div>
+          <div x-ref="chatBox" class="flex-1 overflow-y-auto scrollbar-thin px-5 py-4 space-y-3">
+            <template x-for="(m, idx) in chatMessages" :key="idx">
+              <div :class="m.role==='user' ? 'flex justify-end' : 'flex justify-start'">
+                <div :class="m.role==='user' ? 'bg-ink-900 text-white' : 'bg-gray-100 text-ink-800'" class="max-w-[75%] rounded-xl px-3.5 py-2 text-sm leading-relaxed" x-text="m.text"></div>
+              </div>
+            </template>
+            <div x-show="aiTyping" x-cloak class="flex justify-start">
+              <div class="bg-gray-100 text-gray-400 rounded-xl px-3.5 py-2 text-sm">
+                <i class="fa-solid fa-ellipsis fa-fade"></i> écrit…
+              </div>
+            </div>
+          </div>
+          <form @submit.prevent="sendChat()" class="flex items-center gap-2 px-4 py-3 border-t border-gray-100 flex-shrink-0">
+            <input x-model="chatInput" type="text" placeholder="Pose une question sur tes ventes, tes concurrents…" class="flex-1 bg-gray-100 border border-transparent focus:border-accent focus:bg-white rounded-lg px-3 py-2 text-sm outline-none transition">
+            <button type="submit" class="bg-accent hover:bg-accent-dark text-ink-900 font-bold text-sm px-4 py-2 rounded-lg transition flex-shrink-0">Envoyer</button>
+          </form>
+        </div>
+      </div></template>
+
+      <!-- ================= MOCKUPS ================= -->
+      <template x-if="page==='mockups'"><div class="fade-enter space-y-6 max-w-7xl mx-auto">
+
+        <div class="bg-white rounded-xl border border-gray-200 shadow-card p-5">
+          <h3 class="font-bold text-sm text-ink-900 mb-3">Générer des mockups produit (Stability AI)</h3>
+          <div class="flex flex-wrap gap-3 items-end">
+            <div>
+              <label class="text-xs font-semibold text-gray-500 block mb-1">Produit</label>
+              <select class="border border-gray-200 rounded-lg px-3 py-2 text-sm w-56"><option>Collier prénom plaqué or</option></select>
+            </div>
+            <div>
+              <label class="text-xs font-semibold text-gray-500 block mb-1">Style</label>
+              <select class="border border-gray-200 rounded-lg px-3 py-2 text-sm w-40"><option>Studio</option><option>Lifestyle</option><option>Flat lay</option></select>
+            </div>
+            <div>
+              <label class="text-xs font-semibold text-gray-500 block mb-1">Résolution</label>
+              <select class="border border-gray-200 rounded-lg px-3 py-2 text-sm w-36"><option>2000×2000px</option></select>
+            </div>
+            <div>
+              <label class="text-xs font-semibold text-gray-500 block mb-1">Quantité</label>
+              <input type="number" value="8" class="border border-gray-200 rounded-lg px-3 py-2 text-sm w-20">
+            </div>
+            <button class="bg-accent text-ink-900 font-bold text-sm px-4 py-2 rounded-lg hover:bg-accent-dark ml-auto">Générer (~0,08 €)</button>
+          </div>
+        </div>
+
+        <div class="bg-white rounded-xl border border-gray-200 shadow-card p-5">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="font-bold text-sm text-ink-900">Bibliothèque de mockups</h3>
+            <div class="flex gap-2 text-xs font-semibold">
+              <span class="tag-pill bg-gray-100 text-gray-600">Tous</span><span class="tag-pill bg-accent-light text-accent-dark">Studio</span><span class="tag-pill bg-gray-100 text-gray-600">Lifestyle</span><span class="tag-pill bg-gray-100 text-gray-600">Flat lay</span>
+            </div>
+          </div>
+          <div class="grid grid-cols-6 gap-3">
+            <template x-for="i in 12" :key="i">
+              <div class="relative group rounded-lg overflow-hidden border border-gray-100">
+                <img :src="'https://picsum.photos/seed/mockup'+i+'/220/220'" class="w-full aspect-square object-cover">
+                <div class="absolute inset-0 bg-ink-900/0 group-hover:bg-ink-900/40 transition flex items-center justify-center opacity-0 group-hover:opacity-100">
+                  <button class="bg-white text-ink-900 text-[11px] font-bold px-2 py-1 rounded-md">Upload sur Etsy</button>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div></template>
+
+      <!-- ================= PROMOTION ================= -->
+      <template x-if="page==='promotion'"><div class="fade-enter space-y-6 max-w-7xl mx-auto">
+
+        <div class="grid grid-cols-4 gap-4">
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Posts planifiés (30j)</p><p class="text-xl font-extrabold">64</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +8 vs mois dernier</p></div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Clics générés</p><p class="text-xl font-extrabold">4 210</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +540 vs mois dernier</p></div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Ventes attribuées</p><p class="text-xl font-extrabold text-accent-dark">58</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +12 vs mois dernier</p></div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Meilleur canal</p><p class="text-xl font-extrabold">Pinterest</p><p class="text-xs text-gray-400 font-semibold mt-1">Stable depuis 2 mois</p></div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-4">
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-5">
+            <h3 class="font-bold text-sm text-ink-900 mb-3">Planning éditorial (30 jours)</h3>
+            <div class="grid grid-cols-7 gap-1.5 text-[10px] text-center text-gray-400 mb-1">
+              <span>L</span><span>M</span><span>M</span><span>J</span><span>V</span><span>S</span><span>D</span>
+            </div>
+            <div class="grid grid-cols-7 gap-1.5">
+              <template x-for="d in 30" :key="d">
+                <div class="aspect-square rounded-md flex items-center justify-center text-[10px] font-semibold"
+                     :class="[3,7,10,14,17,21,24,28].includes(d) ? 'bg-accent-light text-accent-dark' : 'bg-gray-50 text-gray-400'"
+                     x-text="d"></div>
+              </template>
+            </div>
+          </div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-5">
+            <h3 class="font-bold text-sm text-ink-900 mb-3">File de publication</h3>
+            <div class="space-y-3 text-sm">
+              <div class="flex items-center gap-3"><i class="fa-brands fa-pinterest text-rose-500 text-lg w-5"></i><div class="flex-1"><p class="font-medium">Épingle : "Collier prénom plaqué or"</p><p class="text-xs text-gray-500">Aujourd'hui 18:30 — meilleur horaire détecté</p></div><span class="tag-pill bg-accent-light text-accent-dark">Planifié</span></div>
+              <div class="flex items-center gap-3"><i class="fa-brands fa-tiktok text-ink-900 text-lg w-5"></i><div class="flex-1"><p class="font-medium">Script vidéo : déballage bracelet initiales</p><p class="text-xs text-gray-500">Demain 12:00</p></div><span class="tag-pill bg-blue-50 text-blue-600">Brouillon IA</span></div>
+              <div class="flex items-center gap-3"><i class="fa-brands fa-instagram text-pink-500 text-lg w-5"></i><div class="flex-1"><p class="font-medium">Caption + hashtags : bague prénom</p><p class="text-xs text-gray-500">Jeu. 09:00</p></div><span class="tag-pill bg-accent-light text-accent-dark">Planifié</span></div>
+              <div class="flex items-center gap-3"><i class="fa-brands fa-facebook text-blue-600 text-lg w-5"></i><div class="flex-1"><p class="font-medium">Post : promo fête des mères</p><p class="text-xs text-gray-500">Ven. 17:00</p></div><span class="tag-pill bg-gray-100 text-gray-500">En attente</span></div>
+            </div>
+          </div>
+        </div>
+      </div></template>
+
+      <!-- ================= RANK TRACKER ================= -->
+      <template x-if="page==='rank'"><div class="fade-enter space-y-6 max-w-7xl mx-auto">
+
+        <div class="grid grid-cols-4 gap-4">
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Mots-clés suivis</p><p class="text-xl font-extrabold">24</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +3 vs mois dernier</p></div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Top 8</p><p class="text-xl font-extrabold text-accent-dark">9</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +2 vs mois dernier</p></div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Page 1</p><p class="text-xl font-extrabold text-amber-500">11</p><p class="text-xs text-gray-400 font-semibold mt-1"><i class="fa-solid fa-minus"></i> -1 vs mois dernier</p></div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Hors radar</p><p class="text-xl font-extrabold text-rose-500">4</p><p class="text-xs text-rose-500 font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +1 vs mois dernier</p></div>
+        </div>
+
+        <div @dblclick="openFocusMode('chartRank')" title="Double-clic pour agrandir" class="bg-white rounded-xl border border-gray-200 shadow-card p-5 cursor-zoom-in">
+          <h3 class="font-bold text-sm text-ink-900 mb-4">Évolution de position — "collier prénom personnalisé"</h3>
+          <canvas id="chartRank" height="90"></canvas>
+        </div>
+
+        <div class="bg-white rounded-xl border border-gray-200 shadow-card">
+          <div class="p-5 pb-4"><h3 class="font-bold text-sm text-ink-900">Suivi par mot-clé</h3></div>
+          <div class="overflow-x-auto px-5 pb-5">
+          <table class="w-full text-sm min-w-[760px]">
+            <thead><tr class="text-left text-xs text-gray-500 border-b border-gray-100"><th class="pb-2 font-semibold">Mot-clé</th><th class="pb-2 font-semibold">Position</th><th class="pb-2 font-semibold">Statut</th><th class="pb-2 font-semibold">Évolution 7j</th><th class="pb-2 font-semibold">Top Seller</th></tr></thead>
+            <tbody class="divide-y divide-gray-50">
+              <tr><td class="py-2.5 font-medium">collier prénom personnalisé</td><td class="font-bold">#3</td><td><span class="tag-pill bg-accent-light text-accent-dark">Top 8</span></td><td class="text-accent-dark font-semibold"><i class="fa-solid fa-arrow-up"></i> +4</td><td><i class="fa-solid fa-star text-amber-400"></i></td></tr>
+              <tr><td class="py-2.5 font-medium">bijou personnalisé cadeau maman</td><td class="font-bold">#6</td><td><span class="tag-pill bg-accent-light text-accent-dark">Top 8</span></td><td class="text-accent-dark font-semibold"><i class="fa-solid fa-arrow-up"></i> +2</td><td></td></tr>
+              <tr><td class="py-2.5 font-medium">bracelet initiales gravé</td><td class="font-bold">#14</td><td><span class="tag-pill bg-amber-100 text-amber-700">Page 1</span></td><td class="text-gray-500 font-semibold"><i class="fa-solid fa-minus"></i> 0</td><td></td></tr>
+              <tr><td class="py-2.5 font-medium">collier signe astro</td><td class="font-bold">#38</td><td><span class="tag-pill bg-rose-100 text-rose-600">Hors radar</span></td><td class="text-rose-500 font-semibold"><i class="fa-solid fa-arrow-down"></i> -9</td><td></td></tr>
+              <tr><td class="py-2.5 font-medium">cadeau demoiselle d'honneur bijou</td><td class="font-bold">#9</td><td><span class="tag-pill bg-amber-100 text-amber-700">Page 1</span></td><td class="text-accent-dark font-semibold"><i class="fa-solid fa-arrow-up"></i> +6</td><td></td></tr>
+            </tbody>
+          </table>
+          </div>
+        </div>
+      </div></template>
+
+      <!-- ================= SHIPPING / COSTS ================= -->
+      <template x-if="page==='shipping'"><div class="fade-enter space-y-6 max-w-7xl mx-auto">
+
+        <div class="grid grid-cols-3 gap-4">
+          <div class="col-span-2 bg-white rounded-xl border border-gray-200 shadow-card p-5">
+            <h3 class="font-bold text-sm text-ink-900 mb-4">Coût de livraison &amp; frais Etsy par pays</h3>
+            <table class="w-full text-sm">
+              <thead><tr class="text-left text-xs text-gray-500 border-b border-gray-100"><th class="pb-2 font-semibold">Pays</th><th class="pb-2 font-semibold">Livraison moy.</th><th class="pb-2 font-semibold">Délai</th><th class="pb-2 font-semibold">Meilleur fournisseur</th><th class="pb-2 font-semibold">Profil Etsy</th></tr></thead>
+              <tbody class="divide-y divide-gray-50">
+                <tr><td class="py-2.5 font-medium">🇺🇸 États-Unis</td><td>3,40 €</td><td>8-12j</td><td>Eprolo</td><td><span class="tag-pill bg-accent-light text-accent-dark">Synchronisé</span></td></tr>
+                <tr><td class="py-2.5 font-medium">🇬🇧 Royaume-Uni</td><td>2,90 €</td><td>6-10j</td><td>CJ Dropshipping</td><td><span class="tag-pill bg-accent-light text-accent-dark">Synchronisé</span></td></tr>
+                <tr><td class="py-2.5 font-medium">🇪🇺 Union Européenne</td><td>1,80 €</td><td>4-7j</td><td>Mon catalogue</td><td><span class="tag-pill bg-accent-light text-accent-dark">Synchronisé</span></td></tr>
+                <tr><td class="py-2.5 font-medium">🇦🇺 Australie</td><td>4,60 €</td><td>12-18j</td><td>Zendrop</td><td><span class="tag-pill bg-amber-100 text-amber-700">À générer</span></td></tr>
+                <tr><td class="py-2.5 font-medium">🇨🇦 Canada</td><td>3,90 €</td><td>10-15j</td><td>Eprolo</td><td><span class="tag-pill bg-amber-100 text-amber-700">À générer</span></td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-5">
+            <h3 class="font-bold text-sm text-ink-900 mb-4">Calculateur de marge nette</h3>
+            <div class="space-y-3 text-sm">
+              <div><label class="text-xs font-semibold text-gray-500 block mb-1">Coût fournisseur</label><div class="flex items-center border border-gray-200 rounded-lg px-3"><input type="number" x-model.number="calc.cost" step="0.1" class="w-full py-2 outline-none text-sm"><span class="text-gray-400 text-xs">€</span></div></div>
+              <div><label class="text-xs font-semibold text-gray-500 block mb-1">Frais de livraison</label><div class="flex items-center border border-gray-200 rounded-lg px-3"><input type="number" x-model.number="calc.shipping" step="0.1" class="w-full py-2 outline-none text-sm"><span class="text-gray-400 text-xs">€</span></div></div>
+              <div><label class="text-xs font-semibold text-gray-500 block mb-1">Prix de vente</label><div class="flex items-center border border-gray-200 rounded-lg px-3"><input type="number" x-model.number="calc.price" step="0.1" class="w-full py-2 outline-none text-sm"><span class="text-gray-400 text-xs">€</span></div></div>
+              <hr class="border-gray-100">
+              <div class="flex justify-between text-xs text-gray-500"><span>Frais Etsy (6,5% + 0,20€)</span><span x-text="calc.etsyFee.toFixed(2)+' €'"></span></div>
+              <div class="flex justify-between font-bold text-sm"><span>Marge nette</span><span :class="calc.marginPct >= 30 ? 'text-accent-dark' : 'text-rose-500'" x-text="calc.marginEur.toFixed(2)+' € ('+calc.marginPct.toFixed(1)+'%)'"></span></div>
+              <div class="bg-accent-light text-accent-dark text-xs font-semibold rounded-lg p-2.5 leading-relaxed">
+                Pour 35% de marge, vends à <span x-text="calc.recommendedPrice.toFixed(2)+' €'" class="font-bold"></span>.
+              </div>
+              <div x-show="calc.marginPct > 40" x-cloak x-transition class="bg-accent text-white text-sm font-bold rounded-lg p-3 text-center">
+                🎉 Excellente marge ! Tu es dans le top 10% des vendeurs EtsyDrop.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="bg-white rounded-xl border border-gray-200 shadow-card p-5">
+          <h3 class="font-bold text-sm text-ink-900 mb-1">Impact d'une promotion boutique</h3>
+          <p class="text-xs text-gray-500 mb-4">Basé sur le prix de vente et les coûts saisis dans le calculateur ci-dessus (<span x-text="(calc.price || 0).toFixed(2)+' €'" class="font-semibold"></span>).</p>
+          <div class="flex flex-wrap gap-2 mb-4">
+            <template x-for="pct in [5,10,15,20]" :key="pct">
+              <button @click="simulatePromo(pct)" :class="promo.pct===pct ? 'bg-ink-900 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'" class="px-4 py-2 rounded-lg text-sm font-bold transition" x-text="'-'+pct+'%'"></button>
+            </template>
+          </div>
+
+          <div x-show="promo.pct !== null" x-cloak class="space-y-3">
+            <div class="grid grid-cols-2 gap-4 text-sm">
+              <div class="bg-gray-50 rounded-lg p-3">
+                <p class="text-xs text-gray-500 mb-1">Nouveau prix de vente</p>
+                <p class="text-lg font-extrabold text-ink-900" x-text="promo.price.toFixed(2)+' €'"></p>
+              </div>
+              <div class="bg-gray-50 rounded-lg p-3">
+                <p class="text-xs text-gray-500 mb-1">Nouvelle marge nette</p>
+                <p class="text-lg font-extrabold" :class="promoMarginClass()" x-text="promo.marginEur.toFixed(2)+' € ('+promo.marginPct.toFixed(1)+'%)'"></p>
+              </div>
+            </div>
+            <div x-show="promo.marginEur < 0" x-cloak class="bg-rose-50 border border-rose-200 text-rose-700 text-sm font-semibold rounded-lg p-3 flex items-center gap-2">
+              <i class="fa-solid fa-triangle-exclamation"></i>
+              <span x-text="'Promotion non rentable — pertes de '+Math.abs(promo.marginEur).toFixed(2)+' € par vente'"></span>
+            </div>
+          </div>
+        </div>
+      </div></template>
+
+      <!-- ================= TAXES & CHANGE ================= -->
+      <template x-if="page==='taxes'"><div class="fade-enter space-y-6 max-w-7xl mx-auto">
+
+        <div class="bg-white rounded-xl border border-gray-200 shadow-card">
+          <div class="p-5 pb-4">
+            <h3 class="font-bold text-sm text-ink-900">Fiscalité &amp; frais de change par pays</h3>
+            <p class="text-xs text-gray-500 mt-0.5">Etsy collecte généralement la TVA à la source (IOSS) pour les envois vers l'UE, mais les droits de douane restent possibles au-delà de certains seuils.</p>
+          </div>
+          <div class="overflow-x-auto px-5 pb-5">
+          <table class="w-full text-sm min-w-[760px]">
+            <thead><tr class="text-left text-xs text-gray-500 border-b border-gray-100">
+              <th class="pb-2 font-semibold">Pays</th><th class="pb-2 font-semibold">TVA</th><th class="pb-2 font-semibold">Seuil douane</th><th class="pb-2 font-semibold">Frais de change Etsy</th><th class="pb-2 font-semibold">Impact net sur marge</th>
+            </tr></thead>
+            <tbody class="divide-y divide-gray-50">
+              <template x-for="c in countries" :key="c.code">
+                <tr>
+                  <td class="py-2.5 font-medium" x-text="c.flag+' '+c.name"></td>
+                  <td x-text="c.vat"></td>
+                  <td x-text="c.customs"></td>
+                  <td x-text="c.changeFeePct > 0 ? c.changeFeePct+'%' : '—'"></td>
+                  <td :class="c.changeFeePct>0 ? 'text-amber-600 font-semibold' : 'text-accent-dark font-semibold'" x-text="c.changeFeePct>0 ? '-'+c.changeFeePct+' pt (frais de change)' : 'Neutre (devise EUR)'"></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+          </div>
+        </div>
+
+        <div class="bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-4 flex gap-3 text-sm">
+          <i class="fa-solid fa-triangle-exclamation mt-0.5"></i>
+          <p>Attention : les colis de plus de 150 € expédiés dans l'Union Européenne peuvent déclencher des droits de douane à la charge du client.</p>
+        </div>
+
+        <div class="bg-white rounded-xl border border-gray-200 shadow-card p-5">
+          <h3 class="font-bold text-sm text-ink-900 mb-1">Comment fonctionne le frais de change ?</h3>
+          <p class="text-xs text-gray-500 leading-relaxed">Quand ta boutique Etsy encaisse en devise étrangère (USD, GBP, AUD, CAD) et que tu reverses tes fonds en euros, Etsy Payments applique un frais de conversion d'environ <span class="font-semibold text-ink-900">1,8%</span> sur le montant converti. Ce frais s'ajoute aux frais de transaction (6,5%) et de paiement, et doit être intégré dans ton calcul de marge nette pour les ventes hors zone euro.</p>
+        </div>
+      </div></template>
+
+      <!-- ================= NICHE FINDER ================= -->
+      <template x-if="page==='niches'"><div class="fade-enter space-y-6 max-w-7xl mx-auto">
+
+        <div class="bg-white rounded-xl border border-gray-200 shadow-card p-5 flex flex-wrap gap-3 items-end">
+          <div><label class="text-xs font-semibold text-gray-500 block mb-1">Catégorie</label><select class="border border-gray-200 rounded-lg px-3 py-2 text-sm w-48"><option>Bijoux &amp; accessoires</option></select></div>
+          <div><label class="text-xs font-semibold text-gray-500 block mb-1">Pays cible</label><select class="border border-gray-200 rounded-lg px-3 py-2 text-sm w-40"><option>🇺🇸 États-Unis</option><option>🇫🇷 France</option><option>🇬🇧 Royaume-Uni</option></select></div>
+          <button class="bg-accent text-ink-900 font-bold text-sm px-4 py-2 rounded-lg hover:bg-accent-dark">Détecter les niches</button>
+        </div>
+
+        <div class="grid grid-cols-3 gap-4">
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-5">
+            <div class="flex justify-between items-start mb-2"><h4 class="font-bold text-sm">Bijoux gravure braille</h4><span class="tag-pill bg-accent-light text-accent-dark">Saturation 12%</span></div>
+            <p class="text-xs text-gray-500 mb-3">Opportunité forte — quasi aucun concurrent, forte charge émotionnelle.</p>
+            <div class="flex justify-between text-xs text-gray-600 mb-3"><span>Score opportunité</span><span class="font-bold text-accent-dark">94/100</span></div>
+            <p class="text-xs"><i class="fa-solid fa-boxes-stacked text-gray-400 mr-1"></i>18 produits dispo (Eprolo, CJ)</p>
+          </div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-5">
+            <div class="flex justify-between items-start mb-2"><h4 class="font-bold text-sm">Bijoux duo mère-fille</h4><span class="tag-pill bg-amber-100 text-amber-700">Saturation 41%</span></div>
+            <p class="text-xs text-gray-500 mb-3">Pic saisonnier attendu — fête des mères dans 6 semaines.</p>
+            <div class="flex justify-between text-xs text-gray-600 mb-3"><span>Score opportunité</span><span class="font-bold text-accent-dark">81/100</span></div>
+            <p class="text-xs"><i class="fa-solid fa-boxes-stacked text-gray-400 mr-1"></i>34 produits dispo (Printify, Zendrop)</p>
+          </div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-5">
+            <div class="flex justify-between items-start mb-2"><h4 class="font-bold text-sm">Porte-clés date importante</h4><span class="tag-pill bg-rose-100 text-rose-600">Saturation 68%</span></div>
+            <p class="text-xs text-gray-500 mb-3">Marché plus mature, différenciation nécessaire.</p>
+            <div class="flex justify-between text-xs text-gray-600 mb-3"><span>Score opportunité</span><span class="font-bold text-amber-600">62/100</span></div>
+            <p class="text-xs"><i class="fa-solid fa-boxes-stacked text-gray-400 mr-1"></i>52 produits dispo (toutes sources)</p>
+          </div>
+        </div>
+      </div></template>
+
+      <!-- ================= SETTINGS ================= -->
+      <template x-if="page==='settings'"><div class="fade-enter space-y-6 max-w-7xl mx-auto">
+
+        <div class="bg-white rounded-xl border border-gray-200 shadow-card p-5">
+          <h3 class="font-bold text-sm text-ink-900 mb-4">Intégrations connectées</h3>
+          <div class="grid grid-cols-3 gap-3">
+            <template x-for="ig in integrations" :key="ig.name">
+              <div class="border border-gray-100 rounded-lg p-3 flex items-center gap-3">
+                <div class="w-9 h-9 rounded-lg flex items-center justify-center text-white text-sm" :style="'background:'+ig.color"><i :class="ig.icon"></i></div>
+                <div class="min-w-0 flex-1">
+                  <p class="text-sm font-semibold truncate" x-text="ig.name"></p>
+                  <p class="text-[11px] text-gray-500" x-text="ig.status"></p>
+                </div>
+                <span class="relative flex w-2 h-2 flex-shrink-0">
+                  <span x-show="ig.connected" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-accent opacity-75"></span>
+                  <span class="relative inline-flex rounded-full h-2 w-2" :class="ig.connected ? 'bg-accent' : 'bg-gray-300'"></span>
+                </span>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <div class="bg-white rounded-xl border border-gray-200 shadow-card p-5">
+          <h3 class="font-bold text-sm text-ink-900 mb-1">Abonnement</h3>
+          <p class="text-xs text-gray-500 mb-4">Gère ton plan EtsyDrop.</p>
+          <div class="grid grid-cols-2 gap-4">
+            <div class="border-2 border-gray-100 rounded-xl p-4">
+              <p class="font-bold text-sm mb-1">Free</p>
+              <p class="text-2xl font-extrabold mb-3">0 €<span class="text-sm font-medium text-gray-400">/mois</span></p>
+              <ul class="text-xs text-gray-600 space-y-1.5 mb-4">
+                <li><i class="fa-solid fa-check text-accent mr-1.5"></i>Sourcing multi-sources</li>
+                <li><i class="fa-solid fa-check text-accent mr-1.5"></i>Commandes &amp; fulfillment</li>
+                <li><i class="fa-solid fa-check text-accent mr-1.5"></i>Analytics de base</li>
+                <li class="text-gray-400"><i class="fa-solid fa-xmark mr-1.5"></i>IA, Mockups, Promotion, Rank Tracker</li>
+              </ul>
+              <span class="tag-pill bg-gray-100 text-gray-600">Plan actuel</span>
+            </div>
+            <div class="border-2 border-accent rounded-xl p-4 relative overflow-hidden">
+              <span class="absolute top-0 right-0 bg-accent text-ink-900 text-[10px] font-bold px-2 py-1 rounded-bl-lg">RECOMMANDÉ</span>
+              <p class="font-bold text-sm mb-1">Pro</p>
+              <p class="text-2xl font-extrabold mb-3">12 €<span class="text-sm font-medium text-gray-400">/mois</span></p>
+              <ul class="text-xs text-gray-600 space-y-1.5 mb-4">
+                <li><i class="fa-solid fa-check text-accent mr-1.5"></i>Tous les 11 modules débloqués</li>
+                <li><i class="fa-solid fa-check text-accent mr-1.5"></i>Conseils IA illimités</li>
+                <li><i class="fa-solid fa-check text-accent mr-1.5"></i>Mockups &amp; promotion automatisés</li>
+                <li><i class="fa-solid fa-check text-accent mr-1.5"></i>Rank tracker + niche finder</li>
+              </ul>
+              <button class="w-full bg-accent hover:bg-accent-dark text-ink-900 font-bold text-sm py-2 rounded-lg transition">Passer à Pro</button>
+            </div>
+          </div>
+        </div>
+      </div></template>
+
+    </main>
+  </div>
+</div>
+
+<script>
+function app() {
+  // Kept outside Alpine's reactive data on purpose: Alpine deep-proxies everything
+  // returned below, and Chart.js instances mutated inside the same x-init effect
+  // (read + write on the same reactive prop) re-trigger that effect, recreating
+  // charts on canvases that are still in use.
+  let chartInstances = {};
+  // Populated by mountCharts() — the raw config factories, kept so Focus Mode
+  // can build a brand-new, uninstrumented config for the same chart instead of
+  // reusing (and thereby corrupting) the live chart's already-resolved options.
+  let chartDefs = {};
+  return {
+    page: 'dashboard',
+    sidebarOpen: false,
+    darkMode: (() => { try { return localStorage.getItem('etsydrop_dark') === '1'; } catch(e) { return false; } })(),
+
+    // ===== Command palette (Ctrl+K) =====
+    paletteOpen: false,
+    paletteQuery: '',
+    paletteIndex: 0,
+    paletteAllPages: [
+      { type:'page', page:'dashboard', label:'Dashboard', icon:'fa-house' },
+      { type:'page', page:'catalogue', label:'Catalogue', icon:'fa-swatchbook' },
+      { type:'page', page:'sourcing', label:'Sourcing multi-sources', icon:'fa-layer-group' },
+      { type:'page', page:'orders', label:'Commandes & Fulfillment', icon:'fa-truck-fast' },
+      { type:'page', page:'mockups', label:'Mockups IA', icon:'fa-image' },
+      { type:'page', page:'seo', label:'SEO & Mots-clés', icon:'fa-magnifying-glass' },
+      { type:'page', page:'rank', label:'Rank Tracker', icon:'fa-ranking-star' },
+      { type:'page', page:'competitors', label:'Analyse concurrents', icon:'fa-crosshairs' },
+      { type:'page', page:'niches', label:'Niche Finder', icon:'fa-compass' },
+      { type:'page', page:'promotion', label:'Promotion', icon:'fa-bullhorn' },
+      { type:'page', page:'analytics', label:'Analytics', icon:'fa-chart-line' },
+      { type:'page', page:'shipping', label:'Coûts & Expédition', icon:'fa-globe' },
+      { type:'page', page:'taxes', label:'Taxes & Change', icon:'fa-landmark' },
+      { type:'page', page:'ai', label:'Conseils IA', icon:'fa-robot' },
+      { type:'page', page:'settings', label:'Intégrations & Paramètres', icon:'fa-gear' }
+    ],
+    paletteResults() {
+      const q = this.paletteQuery.trim().toLowerCase();
+      const pages = this.paletteAllPages.filter(p => !q || p.label.toLowerCase().includes(q)).slice(0, 8);
+      const products = (this.catalogProducts || [])
+        .filter(p => !q || p.name.toLowerCase().includes(q))
+        .slice(0, 6)
+        .map(p => ({ type: 'product', id: p.id, name: p.name, product: p }));
+      return { pages, products };
+    },
+    paletteFlatList() {
+      const r = this.paletteResults();
+      return r.pages.concat(r.products);
+    },
+    paletteFlatIndex(section, idx) {
+      if (section === 'page') return idx;
+      return this.paletteResults().pages.length + idx;
+    },
+    paletteMoveDown() {
+      const n = this.paletteFlatList().length;
+      if (!n) return;
+      this.paletteIndex = (this.paletteIndex + 1) % n;
+    },
+    paletteMoveUp() {
+      const n = this.paletteFlatList().length;
+      if (!n) return;
+      this.paletteIndex = (this.paletteIndex - 1 + n) % n;
+    },
+    paletteSelect() {
+      const item = this.paletteFlatList()[this.paletteIndex];
+      if (item) this.paletteGoTo(item);
+    },
+    paletteGoTo(item) {
+      if (item.type === 'page') {
+        this.page = item.page;
+      } else if (item.type === 'product') {
+        this.page = 'catalogue';
+        this.$nextTick(() => this.openProductModal(item.product));
+      }
+      this.paletteOpen = false;
+      this.paletteQuery = '';
+      this.paletteIndex = 0;
+    },
+
+    // ===== Focus Mode (double-clic sur une card graphique) =====
+    focusMode: false,
+    focusChartId: null,
+    focusChartTitles: {
+      chartRevenue: 'Revenu & bénéfice net',
+      chartOrdersStatus: 'Statut des commandes',
+      chartAnalyticsMain: 'Revenus vs bénéfice net — 12 mois',
+      chartTraffic: 'Sources de trafic',
+      chartSupplierCost: 'Coût moyen par fournisseur',
+      chartRank: 'Évolution de position',
+      chartCompetitorRevenue: 'Évolution du revenu concurrent'
+    },
+    openFocusMode(chartId) {
+      this.focusChartId = chartId;
+      this.focusMode = true;
+      this.$nextTick(() => this.mountFocusChart());
+    },
+    closeFocusMode() {
+      this.focusMode = false;
+      this.focusChartId = null;
+      const focusInstance = chartInstances['focusCanvas'];
+      if (focusInstance) {
+        focusInstance.destroy();
+        delete chartInstances['focusCanvas'];
+      }
+    },
+    mountFocusChart() {
+      // Rebuilds from the original factory rather than reusing the live chart's
+      // options/data by reference — Chart.js instruments those objects in place,
+      // and handing the same instrumented tree to a second Chart instance throws.
+      const buildConfig = chartDefs[this.focusChartId];
+      const canvas = document.getElementById('focusCanvas');
+      if (!buildConfig || !canvas) return;
+      if (chartInstances['focusCanvas']) chartInstances['focusCanvas'].destroy();
+      const config = buildConfig();
+      config.options = Object.assign({}, config.options, { maintainAspectRatio: false });
+      chartInstances['focusCanvas'] = new Chart(canvas, config);
+    },
+
+    // ===== Live revenue ticker (dashboard) =====
+    revenueTotal: 8432.50,
+    revenueDisplay: 0,
+    revenueFlash: false,
+    formatRevenue(v) {
+      return v.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €';
+    },
+    animateRevenue(from, to, duration) {
+      const start = performance.now();
+      const step = (now) => {
+        const t = Math.min(1, (now - start) / duration);
+        const eased = 1 - Math.pow(1 - t, 3);
+        this.revenueDisplay = from + (to - from) * eased;
+        if (t < 1) requestAnimationFrame(step);
+        else this.revenueDisplay = to;
+      };
+      requestAnimationFrame(step);
+    },
+    startRevenueTicker() {
+      this.animateRevenue(0, this.revenueTotal, 1500);
+      setInterval(() => {
+        const previousTotal = this.revenueTotal;
+        this.revenueTotal += Math.random() * 63 + 24;
+        this.animateRevenue(previousTotal, this.revenueTotal, 800);
+        this.revenueFlash = true;
+        setTimeout(() => { this.revenueFlash = false; }, 800);
+      }, 30000);
+    },
+    chatMessages: [
+      { role: 'assistant', text: "Bonjour ! Je suis ton assistant IA EtsyDrop. Pose-moi une question sur tes ventes, tes concurrents ou tes prochaines actions." }
+    ],
+    chatInput: '',
+    aiTyping: false,
+    chatReplies: [
+      "D'après tes données, republier \"Collier zodiaque\" avec de meilleurs tags pourrait te faire regagner le top 8 sous 2 semaines.",
+      "Ta marge moyenne est de 41,8%. Le produit le moins rentable reste la bague prénom ajustable (31%) — je te recommande de basculer sur CJ Dropshipping.",
+      "Le mot-clé \"bijou personnalisé cadeau maman\" a un score de 91/100 et une tendance de +34%. C'est une belle opportunité pour un nouveau listing.",
+      "Aucun de tes 12 concurrents suivis ne propose la gravure braille — c'est un gap que tu pourrais exploiter rapidement.",
+      "Tes commandes en retard viennent principalement de CJ Dropshipping. Je te conseille de les contacter ou de basculer temporairement sur Eprolo."
+    ],
+    toggleDark() {
+      this.darkMode = !this.darkMode;
+      try { localStorage.setItem('etsydrop_dark', this.darkMode ? '1' : '0'); } catch(e) {}
+      this.$nextTick(() => this.applyChartTheme());
+    },
+    applyChartTheme() {
+      const gridColor = this.darkMode ? '#232730' : '#F1F2F4';
+      const tickColor = this.darkMode ? '#9CA3AF' : '#6B7280';
+      Object.values(chartInstances).forEach(ch => {
+        if (ch.options.scales) {
+          ['x','y'].forEach(ax => {
+            const scale = ch.options.scales[ax];
+            if (!scale) return;
+            if (scale.grid) scale.grid.color = gridColor;
+            scale.ticks = Object.assign({}, scale.ticks, { color: tickColor });
+          });
+        }
+        if (ch.options.plugins && ch.options.plugins.legend && ch.options.plugins.legend.display !== false) {
+          ch.options.plugins.legend.labels = Object.assign({}, ch.options.plugins.legend.labels, { color: tickColor });
+        }
+        ch.update();
+      });
+    },
+    sendChat() {
+      const msg = this.chatInput.trim();
+      if (!msg) return;
+      this.chatMessages.push({ role: 'user', text: msg });
+      this.chatInput = '';
+      this.aiTyping = true;
+      this.scrollChat();
+      setTimeout(() => {
+        const reply = this.chatReplies[Math.floor(Math.random() * this.chatReplies.length)];
+        this.chatMessages.push({ role: 'assistant', text: reply });
+        this.aiTyping = false;
+        this.scrollChat();
+      }, 900);
+    },
+    scrollChat() {
+      this.$nextTick(() => {
+        const el = this.$refs.chatBox;
+        if (el) el.scrollTop = el.scrollHeight;
+      });
+    },
+    titles: {
+      dashboard: 'Dashboard', catalogue: 'Catalogue', sourcing: 'Sourcing multi-sources', orders: 'Commandes & Fulfillment',
+      seo: 'SEO & Mots-clés', competitors: 'Analyse concurrents', analytics: 'Analytics & Performances',
+      ai: 'Conseils IA', mockups: 'Mockups automatiques', promotion: 'Promotion multi-canaux',
+      rank: 'Rank Tracker', shipping: 'Coûts & Expédition', taxes: 'Taxes & Change', niches: 'Niche Finder', settings: 'Intégrations & Paramètres'
+    },
+    subtitles: {
+      dashboard: "Vue d'ensemble de Lumino Bijoux", catalogue: "Toutes tes fiches produit, en un coup d'œil",
+      sourcing: "Compare tes fournisseurs en un coup d'œil",
+      orders: 'Suivi et fulfillment automatique', seo: 'Trouve les mots-clés qui convertissent',
+      competitors: 'Surveille tes concurrents Etsy', analytics: 'Revenus, marges et bénéfice réel',
+      ai: 'Recommandations basées sur tes données', mockups: 'Génère des visuels produit réalistes',
+      promotion: 'Pinterest, TikTok, Instagram, Facebook', rank: 'Ton positionnement Etsy en temps réel',
+      shipping: 'Marge nette par pays et par fournisseur', taxes: 'TVA, douane et frais de change par pays',
+      niches: 'Détecte les niches sous-exploitées',
+      settings: 'APIs connectées et abonnement'
+    },
+    integrations: [
+      { name: 'Etsy', status: 'Boutique connectée', icon: 'fa-solid fa-store', color: '#F1641E', connected: true },
+      { name: 'Mon catalogue', status: 'Synchronisé', icon: 'fa-solid fa-database', color: '#00C896', connected: true },
+      { name: 'Eprolo', status: 'Connecté', icon: 'fa-solid fa-box', color: '#4C6FFF', connected: true },
+      { name: 'CJ Dropshipping', status: 'Connecté', icon: 'fa-solid fa-truck', color: '#FF7A45', connected: true },
+      { name: 'Printify', status: 'Connecté', icon: 'fa-solid fa-shirt', color: '#8B5CF6', connected: true },
+      { name: 'Printful', status: 'Non connecté', icon: 'fa-solid fa-shirt', color: '#9CA3AF', connected: false },
+      { name: 'Zendrop', status: 'Connecté', icon: 'fa-solid fa-bolt', color: '#F5A623', connected: true },
+      { name: 'AliExpress', status: 'Non connecté', icon: 'fa-brands fa-alipay', color: '#9CA3AF', connected: false },
+      { name: 'Pinterest', status: 'Connecté', icon: 'fa-brands fa-pinterest', color: '#E60023', connected: true },
+      { name: 'Stability AI', status: 'Clé API active', icon: 'fa-solid fa-image', color: '#111827', connected: true },
+      { name: 'Claude (Anthropic)', status: 'Clé API active', icon: 'fa-solid fa-robot', color: '#00C896', connected: true },
+      { name: 'Stripe', status: 'Non connecté', icon: 'fa-brands fa-stripe', color: '#9CA3AF', connected: false }
+    ],
+
+    // Shared country data (used by the catalogue "Prix par pays" table and the Taxes & Change page)
+    countries: [
+      { code:'FR', flag:'🇫🇷', name:'France', vat:'20%', customs:'—', changeFeePct:0, shipping:1.80 },
+      { code:'US', flag:'🇺🇸', name:'États-Unis', vat:'Variable (state tax)', customs:'Variable / 0 €', changeFeePct:1.8, shipping:3.40 },
+      { code:'GB', flag:'🇬🇧', name:'Royaume-Uni', vat:'20%', customs:'£135', changeFeePct:1.8, shipping:2.90 },
+      { code:'DE', flag:'🇩🇪', name:'Allemagne', vat:'19%', customs:'—', changeFeePct:0, shipping:1.80 },
+      { code:'AU', flag:'🇦🇺', name:'Australie', vat:'GST 10%', customs:'—', changeFeePct:1.8, shipping:4.60 },
+      { code:'CA', flag:'🇨🇦', name:'Canada', vat:'TPS 5-15%', customs:'—', changeFeePct:1.8, shipping:3.90 }
+    ],
+
+    // ===== Catalogue =====
+    catalogProducts: [
+      {
+        id:'necklace', name:'Collier prénom plaqué or', image:'https://picsum.photos/seed/necklace1/400/400',
+        images:['https://picsum.photos/seed/necklace1/700/700','https://picsum.photos/seed/necklace1b/700/700','https://picsum.photos/seed/necklace1c/700/700','https://picsum.photos/seed/necklace1d/700/700','https://picsum.photos/seed/necklace1e/700/700','https://picsum.photos/seed/necklace1f/700/700'],
+        variantsCount:24, priceMin:22.90, priceMax:29.90, margin:46, stock:'disponible', supplier:'Mon catalogue', baseCost:4.20, freeShipping:false,
+        description:"Collier fin personnalisé au prénom de votre choix, plaqué or 18K véritable. Chaîne réglable, gravure au laser durable, livré dans un écrin cadeau. Idéal pour un cadeau de naissance, d'anniversaire ou de fête des mères.",
+        tags:['collier prénom','bijou personnalisé','cadeau maman','plaqué or','cadeau naissance','bijou femme','collier sur mesure','cadeau anniversaire','bijou minimaliste','collier gravé','cadeau fête des mères','bijou fin','collier chaîne'],
+        variants:[
+          { color:'Plaqué or', size:'40 cm', engraving:'Oui', supplierPrice:4.20 },
+          { color:'Plaqué or', size:'45 cm', engraving:'Oui', supplierPrice:4.45 },
+          { color:'Argent 925', size:'40 cm', engraving:'Oui', supplierPrice:3.95 },
+          { color:'Or rose', size:'45 cm', engraving:'Oui', supplierPrice:4.60 },
+          { color:'Plaqué or', size:'50 cm', engraving:'Non', supplierPrice:3.80 }
+        ],
+        suppliers:[
+          { name:'Mon catalogue', price:4.20, delay:'2-4 j', available:true },
+          { name:'Eprolo', price:5.10, delay:'8-12 j', available:true },
+          { name:'CJ Dropshipping', price:4.85, delay:'7-10 j', available:true },
+          { name:'AliExpress', price:5.40, delay:'15-25 j', available:true }
+        ]
+      },
+      {
+        id:'bracelet', name:'Bracelet initiales gravées', image:'https://picsum.photos/seed/bracelet2/400/400',
+        images:['https://picsum.photos/seed/bracelet2/700/700','https://picsum.photos/seed/bracelet2b/700/700','https://picsum.photos/seed/bracelet2c/700/700','https://picsum.photos/seed/bracelet2d/700/700','https://picsum.photos/seed/bracelet2e/700/700','https://picsum.photos/seed/bracelet2f/700/700'],
+        variantsCount:18, priceMin:16.90, priceMax:21.90, margin:42, stock:'disponible', supplier:'Mon catalogue', baseCost:3.80, freeShipping:false,
+        description:"Bracelet cordon ajustable avec plaque en acier inoxydable gravée aux initiales de votre choix. Résistant à l'eau, hypoallergénique, disponible en plusieurs coloris de cordon. Un cadeau symbolique et intemporel.",
+        tags:['bracelet initiales','bijou personnalisé','cadeau homme','bracelet cordon','cadeau couple','bijou gravé','bracelet ajustable','cadeau anniversaire','bijou minimaliste','bracelet acier','cadeau amitié','bijou sur mesure','bracelet unisexe'],
+        variants:[
+          { color:'Cordon noir', size:'Ajustable 16-19 cm', engraving:'Oui', supplierPrice:3.80 },
+          { color:'Cordon marron', size:'Ajustable 16-19 cm', engraving:'Oui', supplierPrice:3.85 },
+          { color:'Cordon beige', size:'Ajustable 16-19 cm', engraving:'Oui', supplierPrice:3.90 },
+          { color:'Cordon noir', size:'Ajustable 19-22 cm', engraving:'Non', supplierPrice:3.60 }
+        ],
+        suppliers:[
+          { name:'Mon catalogue', price:3.80, delay:'2-4 j', available:true },
+          { name:'Eprolo', price:4.60, delay:'8-12 j', available:true },
+          { name:'CJ Dropshipping', price:4.10, delay:'7-10 j', available:true },
+          { name:'AliExpress', price:null, delay:null, available:false }
+        ]
+      },
+      {
+        id:'ring', name:'Bague prénom ajustable', image:'https://picsum.photos/seed/ring3/400/400',
+        images:['https://picsum.photos/seed/ring3/700/700','https://picsum.photos/seed/ring3b/700/700','https://picsum.photos/seed/ring3c/700/700','https://picsum.photos/seed/ring3d/700/700','https://picsum.photos/seed/ring3e/700/700','https://picsum.photos/seed/ring3f/700/700'],
+        variantsCount:12, priceMin:18.90, priceMax:24.90, margin:31, stock:'stock_faible', supplier:'CJ Dropshipping', baseCost:5.45, freeShipping:false,
+        description:"Bague anneau ouvert ajustable, gravée avec le prénom de votre choix. Taille unique qui s'adapte à la plupart des doigts, finition plaquée or ou argentée au choix. Un bijou délicat pour un look personnalisé au quotidien.",
+        tags:['bague prénom','bijou personnalisé','bague ajustable','cadeau femme','bague gravée','bijou sur mesure','cadeau anniversaire','bague minimaliste','bijou fin','cadeau maman','bague anneau ouvert','bijou tendance','cadeau noël'],
+        variants:[
+          { color:'Plaqué or', size:'Taille unique ajustable', engraving:'Oui', supplierPrice:5.45 },
+          { color:'Argenté', size:'Taille unique ajustable', engraving:'Oui', supplierPrice:5.10 },
+          { color:'Or rose', size:'Taille unique ajustable', engraving:'Oui', supplierPrice:5.60 }
+        ],
+        suppliers:[
+          { name:'Mon catalogue', price:null, delay:null, available:false },
+          { name:'Eprolo', price:6.20, delay:'8-12 j', available:true },
+          { name:'CJ Dropshipping', price:5.45, delay:'7-10 j', available:true },
+          { name:'AliExpress', price:6.80, delay:'15-25 j', available:true }
+        ]
+      },
+      {
+        id:'earrings', name:"Boucles d'oreilles constellation", image:'https://picsum.photos/seed/earrings4/400/400',
+        images:['https://picsum.photos/seed/earrings4/700/700','https://picsum.photos/seed/earrings4b/700/700','https://picsum.photos/seed/earrings4c/700/700','https://picsum.photos/seed/earrings4d/700/700','https://picsum.photos/seed/earrings4e/700/700','https://picsum.photos/seed/earrings4f/700/700'],
+        variantsCount:9, priceMin:19.90, priceMax:24.90, margin:39, stock:'disponible', supplier:'Mon catalogue', baseCost:4.50, freeShipping:false,
+        description:"Boucles d'oreilles fines en forme de constellation, plaquées or, avec système de fermeture papillon. Légères et hypoallergéniques, elles se portent aussi bien au quotidien que pour une occasion spéciale.",
+        tags:['boucles oreilles','bijou constellation','cadeau femme','boucles plaquées or','bijou fin','cadeau anniversaire','boucles minimalistes','bijou zodiaque','cadeau astro','boucles fines','bijou tendance','cadeau noël','boucles hypoallergéniques'],
+        variants:[
+          { color:'Plaqué or', size:'Petit modèle', engraving:'Non', supplierPrice:4.50 },
+          { color:'Argent 925', size:'Petit modèle', engraving:'Non', supplierPrice:4.20 },
+          { color:'Plaqué or', size:'Grand modèle', engraving:'Non', supplierPrice:4.90 }
+        ],
+        suppliers:[
+          { name:'Mon catalogue', price:4.50, delay:'2-4 j', available:true },
+          { name:'Eprolo', price:5.20, delay:'8-12 j', available:true },
+          { name:'CJ Dropshipping', price:4.95, delay:'7-10 j', available:true },
+          { name:'AliExpress', price:5.60, delay:'15-25 j', available:true }
+        ]
+      },
+      {
+        id:'mug', name:'Mug personnalisé prénom', image:'https://picsum.photos/seed/mug5/400/400',
+        images:['https://picsum.photos/seed/mug5/700/700','https://picsum.photos/seed/mug5b/700/700','https://picsum.photos/seed/mug5c/700/700','https://picsum.photos/seed/mug5d/700/700','https://picsum.photos/seed/mug5e/700/700','https://picsum.photos/seed/mug5f/700/700'],
+        variantsCount:15, priceMin:17.90, priceMax:21.90, margin:38, stock:'disponible', supplier:'CJ Dropshipping', baseCost:7.90, freeShipping:false,
+        description:"Mug céramique 325 ml personnalisé avec le prénom ou message de votre choix, impression sublimation haute résolution résistante au lave-vaisselle et au micro-ondes. Livré dans une boîte cadeau.",
+        tags:['mug personnalisé','cadeau prénom','tasse céramique','cadeau bureau','mug sublimation','cadeau collègue','tasse personnalisée','cadeau fête des mères','mug original','cadeau pas cher','tasse prénom','mug café','cadeau anniversaire'],
+        variants:[
+          { color:'Blanc', size:'325 ml', engraving:'Impression', supplierPrice:7.90 },
+          { color:'Noir mat', size:'325 ml', engraving:'Impression', supplierPrice:8.40 },
+          { color:'Blanc', size:'450 ml', engraving:'Impression', supplierPrice:8.90 }
+        ],
+        suppliers:[
+          { name:'Mon catalogue', price:null, delay:null, available:false },
+          { name:'Eprolo', price:8.60, delay:'8-12 j', available:true },
+          { name:'CJ Dropshipping', price:7.90, delay:'6-9 j', available:true },
+          { name:'AliExpress', price:9.10, delay:'15-25 j', available:true }
+        ]
+      },
+      {
+        id:'anklet', name:'Chaîne de cheville gravée', image:'https://picsum.photos/seed/anklet6/400/400',
+        images:['https://picsum.photos/seed/anklet6/700/700','https://picsum.photos/seed/anklet6b/700/700','https://picsum.photos/seed/anklet6c/700/700','https://picsum.photos/seed/anklet6d/700/700','https://picsum.photos/seed/anklet6e/700/700','https://picsum.photos/seed/anklet6f/700/700'],
+        variantsCount:10, priceMin:15.90, priceMax:19.90, margin:33, stock:'rupture', supplier:'CJ Dropshipping', baseCost:5.90, freeShipping:false,
+        description:"Chaîne de cheville fine gravée, réglable, en acier inoxydable plaqué or résistant à l'eau et à la décoloration. Parfaite pour l'été, seule ou superposée avec d'autres bijoux.",
+        tags:['chaîne cheville','bijou été','cheville gravée','bijou personnalisé','cadeau été','bijou plage','chaîne ajustable','bijou acier','cadeau anniversaire','bijou étanche','cheville fine','cadeau vacances','bijou tendance'],
+        variants:[
+          { color:'Plaqué or', size:'Ajustable 22-27 cm', engraving:'Oui', supplierPrice:5.90 },
+          { color:'Argenté', size:'Ajustable 22-27 cm', engraving:'Oui', supplierPrice:5.60 }
+        ],
+        suppliers:[
+          { name:'Mon catalogue', price:null, delay:null, available:false },
+          { name:'Eprolo', price:6.20, delay:'8-12 j', available:false },
+          { name:'CJ Dropshipping', price:5.90, delay:'7-10 j', available:true },
+          { name:'AliExpress', price:6.10, delay:'15-25 j', available:true }
+        ]
+      }
+    ],
+    selectedProduct: null,
+    galleryIndex: 0,
+    generatedListingVisible: false,
+    openProductModal(p) {
+      this.selectedProduct = p;
+      this.galleryIndex = 0;
+      this.generatedListingVisible = false;
+    },
+    closeProductModal() {
+      this.selectedProduct = null;
+    },
+    nextImage() {
+      if (!this.selectedProduct) return;
+      this.galleryIndex = (this.galleryIndex + 1) % this.selectedProduct.images.length;
+    },
+    prevImage() {
+      if (!this.selectedProduct) return;
+      const len = this.selectedProduct.images.length;
+      this.galleryIndex = (this.galleryIndex - 1 + len) % len;
+    },
+    countryPricingRows(product) {
+      if (!product) return [];
+      const targetMargin = 0.35;
+      return this.countries.map(c => {
+        const shippingCost = product.freeShipping ? c.shipping : 0;
+        const sellerCost = product.baseCost + shippingCost;
+        const changePct = c.changeFeePct / 100;
+        const price = (sellerCost + 0.20) / (1 - 0.065 - changePct - targetMargin);
+        const etsyFee = price * 0.065 + 0.20;
+        const changeFee = price * changePct;
+        const marginEur = price - sellerCost - etsyFee - changeFee;
+        const marginPct = price > 0 ? (marginEur / price) * 100 : 0;
+        return {
+          code: c.code, flag: c.flag, name: c.name, vat: c.vat,
+          price, etsyFee, shipping: product.freeShipping ? 'Gratuite' : c.shipping,
+          changeFee, marginEur, marginPct
+        };
+      });
+    },
+    generatedTitle(p) {
+      const t = `${p.name} Personnalisé, Cadeau Bijou Sur Mesure Gravé, Idée Cadeau Unique`;
+      return t.length > 140 ? t.slice(0, 140) : t;
+    },
+    generatedDescription(p) {
+      return p.description + " Fabriqué avec soin et expédié rapidement, ce bijou est une idée cadeau parfaite pour marquer un moment spécial : anniversaire, naissance, fête des mères ou simplement pour faire plaisir à une personne que vous aimez. Satisfaction garantie ou remboursé.";
+    },
+
+    // ===== Sparklines (catalogue — ventes/jour sur 7 jours) =====
+    sparkData: {
+      necklace: [9, 11, 10, 13, 15, 14, 17],
+      bracelet: [6, 7, 6, 8, 9, 8, 10],
+      ring: [7, 6, 5, 4, 5, 3, 2],
+      earrings: [5, 6, 7, 6, 8, 9, 10],
+      mug: [8, 9, 8, 10, 9, 11, 12],
+      anklet: [6, 5, 5, 4, 3, 2, 1]
+    },
+    sparklineSvg(values) {
+      if (!values || !values.length) return '';
+      const min = Math.min(...values), max = Math.max(...values);
+      const range = (max - min) || 1;
+      const last = values.length - 1;
+      const points = values.map((v, i) => [(i / last) * 60 + 2, 22 - ((v - min) / range) * 20]);
+      const pts = points.map(([x, y]) => x.toFixed(2) + ',' + y.toFixed(2)).join(' ');
+      const trendUp = values[last] >= values[0];
+      const color = trendUp ? '#00C896' : '#F43F5E';
+      const [lastX, lastY] = points[last];
+      return '<svg viewBox="0 0 64 24" width="64" height="24">'
+        + '<polyline points="' + pts + '" fill="none" stroke="' + color + '" stroke-width="1.5" stroke-linejoin="round" opacity="0.9"></polyline>'
+        + '<circle cx="' + lastX.toFixed(2) + '" cy="' + lastY.toFixed(2) + '" r="2" fill="' + color + '"></circle>'
+        + '</svg>';
+    },
+
+    // ===== Listing Quality Score (shared by the SEO page and the catalogue modal) =====
+    lqsScore: 78,
+    lqsChecks: [
+      { section: 'Titre', items: [
+        { status: 'ok', text: '70+ caractères' },
+        { status: 'ok', text: 'Mot-clé principal présent' },
+        { status: 'warning', text: 'Légère redondance détectée' }
+      ]},
+      { section: 'Description', items: [
+        { status: 'ok', text: '160+ caractères' },
+        { status: 'ok', text: 'Mot-clé dans la description' },
+        { status: 'ok', text: 'Structure avec bullet points' }
+      ]},
+      { section: 'Tags', items: [
+        { status: 'warning', text: '10/13 tags utilisés' },
+        { status: 'ok', text: 'Tags diversifiés' },
+        { status: 'ok', text: 'Pas de répétition avec le titre' }
+      ]}
+    ],
+    lqsColor(score) {
+      if (score < 50) return '#F43F5E';
+      if (score < 70) return '#F59E0B';
+      return '#00C896';
+    },
+    lqsArcOffset(score) {
+      const circumference = Math.PI * 80;
+      return circumference - (Math.max(0, Math.min(100, score)) / 100) * circumference;
+    },
+
+    // ===== Shop Analyzer (competitors page) =====
+    analyzerFollowing: false,
+    analyzerRange: '12m',
+    analyzerData: {
+      '12m': {
+        labels: ['Oct','Nov','Déc','Jan','Fév','Mar','Avr','Mai','Juin','Juil','Août','Sept'],
+        values: [612000,634000,655000,671000,698000,705000,722000,741000,758000,770000,781000,789508]
+      },
+      all: {
+        labels: ['2015','2016','2017','2018','2019','2020','2021','2022','2023','2024','2025','2026'],
+        values: [1200000,3400000,6800000,11500000,17900000,26200000,36800000,48500000,60100000,70800000,80200000,87360242]
+      }
+    },
+    setAnalyzerRange(range) {
+      this.analyzerRange = range;
+      const ch = chartInstances['chartCompetitorRevenue'];
+      if (!ch) return;
+      const d = this.analyzerData[range];
+      ch.data.labels = d.labels;
+      ch.data.datasets[0].data = d.values;
+      ch.update();
+    },
+    analyzerListings: [
+      { title:'Dainty Initial Necklace', image:'https://picsum.photos/seed/analyzer1/64', sales:3240, revenue:58320, favorites:89400 },
+      { title:'Custom Name Necklace', image:'https://picsum.photos/seed/analyzer2/64', sales:2910, revenue:63690, favorites:76200 },
+      { title:'Layered Necklace Set', image:'https://picsum.photos/seed/analyzer3/64', sales:2540, revenue:91440, favorites:54800 },
+      { title:'Tiny Heart Necklace', image:'https://picsum.photos/seed/analyzer4/64', sales:2180, revenue:32700, favorites:61300 },
+      { title:'Birthstone Ring', image:'https://picsum.photos/seed/analyzer5/64', sales:1860, revenue:44640, favorites:39900 }
+    ],
+
+    calc: { cost: 4.20, shipping: 1.80, price: 24.90, etsyFee: 0, marginEur: 0, marginPct: 0, recommendedPrice: 0 },
+    confettiShown: false,
+    computeCalc() {
+      const c = this.calc;
+      c.etsyFee = c.price * 0.065 + 0.20;
+      c.marginEur = c.price - c.cost - c.shipping - c.etsyFee;
+      c.marginPct = c.price > 0 ? (c.marginEur / c.price) * 100 : 0;
+      const base = c.cost + c.shipping;
+      c.recommendedPrice = (base + 0.20) / (1 - 0.065 - 0.35);
+      if (this.promo.pct !== null) this.simulatePromo(this.promo.pct);
+      if (c.marginPct > 40 && this.confettiShown === false) {
+        this.confettiShown = true;
+        if (window.confetti) {
+          confetti({ particleCount: 120, spread: 70, colors: ['#00C896', '#ffffff', '#1B1F27'], origin: { y: 0.6 } });
+        }
+      }
+    },
+    // ===== Promotion simulator (shipping page) =====
+    promo: { pct: null, price: 0, marginEur: 0, marginPct: 0 },
+    simulatePromo(pct) {
+      const c = this.calc;
+      this.promo.pct = pct;
+      const price = c.price * (1 - pct / 100);
+      const etsyFee = price * 0.065 + 0.20;
+      const marginEur = price - c.cost - c.shipping - etsyFee;
+      const marginPct = price > 0 ? (marginEur / price) * 100 : 0;
+      this.promo.price = price;
+      this.promo.marginEur = marginEur;
+      this.promo.marginPct = marginPct;
+    },
+    promoMarginClass() {
+      if (this.promo.marginPct >= 25) return 'text-accent-dark';
+      if (this.promo.marginPct >= 15) return 'text-amber-600';
+      return 'text-rose-500';
+    },
+    // Chart canvases live inside x-if templates, so most of them don't exist in the
+    // DOM until the user navigates to that page. Charts are therefore built lazily
+    // (on init + on every page change) rather than all at once.
+    mountCharts() {
+      const accent = '#00C896', ink = '#262B35', blue = '#4C6FFF', amber = '#F5A623', rose = '#F43F5E', purple = '#8B5CF6';
+      const months = ['Avr','Mai','Juin','Juil','Août','Sept'];
+      const fullMonths = ['Oct','Nov','Déc','Jan','Fév','Mar','Avr','Mai','Juin','Juil','Août','Sept'];
+
+      const defs = {
+        chartRevenue: () => ({
+          type: 'line',
+          data: { labels: months, datasets: [
+            { label:'Revenu', data:[5200,6100,6800,7300,7950,8432], borderColor: accent, backgroundColor:'rgba(0,200,150,0.08)', fill:true, tension:0.4, borderWidth:2.5, pointRadius:0, pointHoverRadius:5, pointHoverBackgroundColor:accent },
+            { label:'Bénéfice', data:[2050,2450,2740,2960,3260,3524], borderColor: ink, backgroundColor:'transparent', tension:0.4, borderWidth:2.5, pointRadius:0, pointHoverRadius:5, pointHoverBackgroundColor:ink }
+          ]},
+          options: { plugins:{legend:{display:false}}, scales:{ y:{grid:{color:'#F1F2F4'}, ticks:{callback:v=>v+' €'}}, x:{grid:{display:false}} } }
+        }),
+        chartOrdersStatus: () => ({
+          type: 'doughnut',
+          data: { labels:['Livrées','En transit','En attente','Retard'], datasets:[{ data:[276,48,12,6], backgroundColor:[accent, blue, amber, rose], borderWidth:0 }] },
+          options: { cutout:'72%', plugins:{legend:{display:false}} }
+        }),
+        chartAnalyticsMain: () => ({
+          type: 'line',
+          data: { labels: fullMonths, datasets: [
+            { label:'Revenu', data:[3800,4200,4600,5100,5600,5200,6100,6800,7300,7950,8100,8432], borderColor: accent, backgroundColor:'rgba(0,200,150,0.08)', fill:true, tension:0.4, borderWidth:2.5, pointRadius:0, pointHoverRadius:5, pointHoverBackgroundColor:accent },
+            { label:'Bénéfice net', data:[1500,1680,1840,2040,2260,2050,2450,2740,2960,3260,3380,3524], borderColor: ink, tension:0.4, borderWidth:2.5, pointRadius:0, pointHoverRadius:5, pointHoverBackgroundColor:ink }
+          ]},
+          options: { plugins:{legend:{position:'bottom', labels:{boxWidth:10, font:{size:11}}}}, scales:{ y:{grid:{color:'#F1F2F4'}}, x:{grid:{display:false}} } }
+        }),
+        chartTraffic: () => ({
+          type: 'doughnut',
+          data: { labels:['Recherche Etsy','Pinterest','Instagram','Direct','TikTok'], datasets:[{ data:[48,22,14,10,6], backgroundColor:[accent, rose, '#E1306C', ink, '#111827'], borderWidth:0 }] },
+          options: { cutout:'72%', plugins:{legend:{position:'bottom', labels:{boxWidth:8, font:{size:10}}}} }
+        }),
+        chartSupplierCost: () => ({
+          type: 'bar',
+          data: { labels:['Mon cat.','Eprolo','CJ','Printify','Zendrop'], datasets:[{ data:[4.1,5.3,4.9,7.9,5.6], backgroundColor:[accent, blue, purple, amber, '#F5A623'], borderRadius:6 }] },
+          options: { plugins:{legend:{display:false}}, scales:{ y:{grid:{color:'#F1F2F4'}, ticks:{callback:v=>v+' €'}}, x:{grid:{display:false}} } }
+        }),
+        chartRank: () => ({
+          type: 'line',
+          data: { labels:['S1','S2','S3','S4','S5','S6','S7','S8'], datasets:[{ label:'Position', data:[14,12,10,9,7,5,4,3], borderColor: accent, backgroundColor:'rgba(0,200,150,0.08)', fill:true, tension:0.4, borderWidth:2.5, pointRadius:0, pointHoverRadius:5, pointHoverBackgroundColor:accent }] },
+          options: { plugins:{legend:{display:false}}, scales:{ y:{reverse:true, min:1, max:16, grid:{color:'#F1F2F4'}, ticks:{callback:v=>'#'+v}}, x:{grid:{display:false}} } }
+        }),
+        chartCompetitorRevenue: () => ({
+          type: 'line',
+          data: { labels: this.analyzerRange==='12m' ? this.analyzerData['12m'].labels : this.analyzerData.all.labels,
+                   datasets: [{ label:'Revenu', data: this.analyzerRange==='12m' ? this.analyzerData['12m'].values : this.analyzerData.all.values, borderColor: accent, backgroundColor:'rgba(0,200,150,0.08)', fill:true, tension:0.4, borderWidth:2.5, pointRadius:0, pointHoverRadius:5, pointHoverBackgroundColor:accent }] },
+          options: { plugins:{legend:{display:false}}, scales:{ y:{grid:{color:'#F1F2F4'}, ticks:{callback:v=>(v/1000)+'k $'}}, x:{grid:{display:false}} } }
+        })
+      };
+
+      chartDefs = defs;
+
+      Object.keys(defs).forEach(id => {
+        if (chartInstances[id]) return;
+        const canvas = document.getElementById(id);
+        if (!canvas) return;
+        chartInstances[id] = new Chart(canvas, defs[id]());
+      });
+
+      if (this.darkMode) this.applyChartTheme();
+    },
+    init() {
+      this.computeCalc();
+      this.$watch('calc.cost', () => this.computeCalc());
+      this.$watch('calc.shipping', () => this.computeCalc());
+      this.$watch('calc.price', () => this.computeCalc());
+      this.$watch('page', () => this.$nextTick(() => this.mountCharts()));
+      this.$nextTick(() => this.mountCharts());
+
+      // Command palette
+      document.addEventListener('keydown', e => {
+        if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+          e.preventDefault();
+          this.paletteOpen = true;
+        }
+      });
+      this.$watch('paletteOpen', open => {
+        if (open) {
+          this.paletteIndex = 0;
+          this.$nextTick(() => this.$refs.paletteInput && this.$refs.paletteInput.focus());
+        } else {
+          this.paletteQuery = '';
+          this.paletteIndex = 0;
+        }
+      });
+      this.$watch('paletteQuery', () => { this.paletteIndex = 0; });
+
+      // Live revenue ticker
+      this.startRevenueTicker();
+    }
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+# === EtsyDrop backend — dependencies ===
+fastapi
+uvicorn[standard]
+httpx
+supabase
+pydantic
+python-jose[cryptography]
+passlib[bcrypt]
+slowapi
+python-dotenv
+anthropic
+stripe
