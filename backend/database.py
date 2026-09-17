@@ -3,9 +3,11 @@
 # =====================================================================
 #
 # Ce module est le point d'entrée unique vers Supabase :
-# - `get_supabase()` retourne le client Postgres/Auth partagé par toute l'app.
-# - `get_current_user()` est une dépendance FastAPI qui vérifie le JWT
-#   émis par Supabase Auth via l'API officielle (supporte HS256 et ECC P-256).
+# - `get_supabase()` retourne le client Postgres (clé service_role) partagé
+#   par toute l'app pour les opérations de données — bypass RLS par design.
+# - `get_current_user()` est une dépendance FastAPI qui vérifie la session
+#   via un appel HTTP direct à Supabase Auth (clé anon/publishable — voir
+#   pourquoi dans sa docstring).
 #
 # Toutes les requêtes passent par le query builder officiel du client
 # Supabase (PostgREST) : `.select()`, `.eq()`, `.ilike()`, `.insert()`, ...
@@ -18,6 +20,7 @@ import logging
 import os
 from functools import lru_cache
 
+import httpx
 from dotenv import load_dotenv
 from fastapi import Header, HTTPException
 from supabase import Client, create_client
@@ -29,7 +32,11 @@ logger = logging.getLogger("etsydrop.database")
 
 # === CONFIGURATION (jamais loggée, jamais renvoyée dans une réponse API) ===
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")  # service_role — opérations de données (bypass RLS)
+# anon/publishable — utilisée UNIQUEMENT pour vérifier les sessions utilisateur
+# (voir get_current_user). Même valeur que celle déjà publique dans le
+# frontend (SB_KEY côté JS) : ce n'est pas un secret, ça ne dégrade rien.
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
 
 
 # === DÉTECTION DU TYPE DE CLÉ SUPABASE ===
@@ -81,29 +88,45 @@ def get_supabase() -> Client:
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # === DÉPENDANCE FASTAPI : UTILISATEUR COURANT ===
-def get_current_user(authorization: str = Header(..., description="Bearer <supabase_access_token>")) -> CurrentUser:
+async def get_current_user(authorization: str = Header(..., description="Bearer <supabase_access_token>")) -> CurrentUser:
     """
-    Vérifie le token via l'API Supabase Auth — compatible avec HS256 (legacy)
-    et ECC P-256 (nouveau format depuis la migration des clés JWT de Supabase).
+    Vérifie le token via un appel HTTP direct à GET {SUPABASE_URL}/auth/v1/user
+    avec la clé anon/publishable en `apikey` — jamais via un client Supabase
+    construit avec la clé service_role. Plusieurs SDK Supabase (dont
+    supabase-py) confondent apikey/Authorization sur cet appel précis quand
+    le client est authentifié en service_role, ce qui fait échouer GoTrue
+    avec 403 Forbidden (observé en prod : tous les endpoints protégés
+    renvoyaient 401 "Session invalide" après le passage à service_role pour
+    contourner la RLS — voir get_supabase()). L'appel HTTP direct évite
+    complètement ce comportement en gardant un contrôle total des en-têtes.
     """
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Token manquant ou mal formé.")
 
     token = authorization.removeprefix("Bearer ").strip()
 
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        logger.error("SUPABASE_URL ou SUPABASE_ANON_KEY manquant — impossible de vérifier la session.")
+        raise HTTPException(status_code=500, detail="Configuration Supabase manquante côté serveur.")
+
     try:
-        supabase = get_supabase()
-        user_response = supabase.auth.get_user(token)
-        if not user_response or not user_response.user:
-            raise HTTPException(status_code=401, detail="Session invalide ou expirée.")
-        user = user_response.user
-    except HTTPException:
-        raise
-    except Exception:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(
+                f"{SUPABASE_URL}/auth/v1/user",
+                headers={"Authorization": f"Bearer {token}", "apikey": SUPABASE_ANON_KEY},
+            )
+    except httpx.HTTPError:
+        raise HTTPException(status_code=401, detail="Session invalide ou expirée.")
+
+    if response.status_code != 200:
+        raise HTTPException(status_code=401, detail="Session invalide ou expirée.")
+
+    user = response.json()
+    if not isinstance(user, dict) or not user.get("id"):
         raise HTTPException(status_code=401, detail="Session invalide ou expirée.")
 
     return CurrentUser(
-        id=user.id,
-        email=user.email,
+        id=user["id"],
+        email=user.get("email"),
         etsy_shop_connected=False,
     )
