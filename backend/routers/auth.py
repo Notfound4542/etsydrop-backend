@@ -177,9 +177,28 @@ async def etsy_callback(
     shop_name = entry.get("shop_name", "")
     shop_id = await _resolve_shop_id(shop_name) if shop_name else None
     if not shop_id:
+        # Sans ce fallback, une reconnexion où la résolution échoue (rate
+        # limit Etsy transitoire, panne momentanée, etc.) écraserait un
+        # shop_id déjà résolu (par une connexion précédente, ou par un
+        # correctif SQL manuel) avec NULL via l'upsert ci-dessous — la
+        # boutique redeviendrait "non résolue" sans qu'aucune erreur ne le
+        # signale, et toute sync ultérieure échouerait pour une raison
+        # totalement différente de celle qui a déclenché l'échec initial.
+        try:
+            existing = (
+                get_supabase()
+                .table("etsy_tokens")
+                .select("shop_id")
+                .eq("user_id", entry["user_id"])
+                .maybe_single()
+                .execute()
+            )
+            shop_id = existing.data.get("shop_id") if existing.data else None
+        except Exception:
+            shop_id = None
         logger.warning(
-            "shop_id non résolu pour user_id=%s (shop_name=%r) — le token est quand même sauvegardé.",
-            entry["user_id"], shop_name,
+            "shop_id non résolu pour user_id=%s (shop_name=%r) — conservation de la valeur déjà en base (%s).",
+            entry["user_id"], shop_name, shop_id,
         )
 
     # Jamais laissé remonter tel quel : une exception ici (ex. colonnes
