@@ -112,18 +112,23 @@ async def etsy_login(
 # === RÉSOLUTION DU SHOP_ID (endpoint public, pas soumis au tier OAuth) ===
 async def _resolve_shop_id(shop_name: str) -> Optional[int]:
     """
-    GET /shops/{shop_name} est un endpoint public (x-api-key seulement,
-    même mécanisme que routers/shop_analyzer.py) — contrairement à
-    GET /users/{user_id}/shops, il n'est pas bloqué par le tier Etsy actuel
-    de cette app (confirmé 403 en prod). Retourne None sans lever si la
-    boutique n'est pas trouvée : la connexion ne doit pas échouer pour ça,
-    seule la sync des fiches/du CA sera indisponible.
+    GET /shops/{shop_id} attend un ID NUMÉRIQUE dans le path — Etsy renvoie
+    400 "Expected int value for shop_id (got string)" si on y met un nom
+    (confirmé en prod via test_etsy.py). La recherche par nom se fait via
+    GET /shops?shop_name=... (findShops, query param), qui renvoie
+    {count, results: [...]} — même mécanisme public (x-api-key seulement,
+    pas soumis au tier OAuth) que routers/shop_analyzer.py. Retourne None
+    sans lever si la boutique n'est pas trouvée : la connexion ne doit pas
+    échouer pour ça, seule la sync des fiches/du CA sera indisponible.
     """
     try:
-        shop = await etsy_get(f"/shops/{shop_name}")
-        resolved = shop.get("shop_id") if isinstance(shop, dict) else None
+        payload = await etsy_get("/shops", params={"shop_name": shop_name})
+        results = payload.get("results", []) if isinstance(payload, dict) else []
+        resolved = results[0].get("shop_id") if results else None
         if resolved:
             logger.info("Shop résolu : shop_name=%s -> shop_id=%s", shop_name, resolved)
+        else:
+            logger.warning("Aucune boutique Etsy trouvée pour shop_name=%s.", shop_name)
         return resolved
     except Exception as exc:
         logger.warning("Résolution shop_id échouée pour shop_name=%s : %s: %s", shop_name, type(exc).__name__, exc)
