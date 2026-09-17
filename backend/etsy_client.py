@@ -20,7 +20,19 @@ from database import get_supabase
 
 logger = logging.getLogger("etsydrop.etsy_client")
 
-ETSY_API_KEY = os.getenv("ETSY_API_KEY")
+
+def _clean_env(name: str) -> Optional[str]:
+    return os.getenv(name, "").strip().strip("\"'") or None
+
+
+# Etsy exige, depuis un changement de plateforme début février 2026, que
+# x-api-key porte "keystring:shared_secret" et plus seulement le keystring
+# seul — sur TOUT appel, OAuth ou non. Sans le secret, Etsy renvoie
+# 403 {"error":"Shared secret is required in x-api-key header."} — constaté
+# en prod sur un appel public (/shops/{shop_name}), donc ça s'applique bien
+# indépendamment du token OAuth du vendeur.
+ETSY_API_KEY = _clean_env("ETSY_API_KEY")
+ETSY_API_SECRET = _clean_env("ETSY_API_SECRET")
 ETSY_API_BASE = "https://openapi.etsy.com/v3/application"
 
 
@@ -76,10 +88,10 @@ async def etsy_get(path: str, *, params: Optional[dict] = None, access_token: Op
     fiches actives). Fourni => appel authentifié pour le compte du vendeur.
     Retry unique après 1s sur un 429 (rate limit Etsy).
     """
-    if not ETSY_API_KEY:
+    if not ETSY_API_KEY or not ETSY_API_SECRET:
         raise HTTPException(status_code=500, detail="Configuration Etsy manquante côté serveur.")
 
-    headers = {"x-api-key": ETSY_API_KEY}
+    headers = {"x-api-key": f"{ETSY_API_KEY}:{ETSY_API_SECRET}"}
     if access_token:
         headers["Authorization"] = f"Bearer {access_token}"
 
