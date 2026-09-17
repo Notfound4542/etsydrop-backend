@@ -12,6 +12,9 @@
 # Ce sont des requêtes paramétrées par construction — aucune chaîne SQL
 # n'est jamais concaténée à la main dans ce projet.
 
+import base64
+import json
+import logging
 import os
 from functools import lru_cache
 
@@ -22,10 +25,50 @@ from supabase import Client, create_client
 from models import CurrentUser
 
 load_dotenv()
+logger = logging.getLogger("etsydrop.database")
 
 # === CONFIGURATION (jamais loggée, jamais renvoyée dans une réponse API) ===
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+
+# === DÉTECTION DU TYPE DE CLÉ SUPABASE ===
+# Le backend doit utiliser la clé service_role (contourne la Row Level
+# Security) — jamais la clé anon/publishable, qui est censée être exposée
+# côté client. Avec RLS activée (voir database_schema.sql) et la mauvaise
+# clé, TOUS les inserts/updates échouent avec 42501 "new row violates row
+# level security policy", sans que rien dans le code n'ait changé — un
+# diagnostic qui coûte cher sans ce contrôle explicite au démarrage.
+def _warn_if_not_service_role(key: str) -> None:
+    if key.startswith("sb_secret_"):
+        return  # nouveau format de clé Supabase, rôle service_role : OK
+    if key.startswith("sb_publishable_"):
+        logger.error(
+            "SUPABASE_KEY ressemble à une clé PUBLISHABLE (%s…), pas à la clé "
+            "service_role. Avec la Row Level Security activée, tous les "
+            "inserts/updates du backend vont échouer (42501). Utilise la clé "
+            "'service_role' de Project Settings > API sur Supabase.",
+            key[:18],
+        )
+        return
+    # Ancien format (JWT signé) : le payload contient un champ "role".
+    try:
+        parts = key.split(".")
+        if len(parts) != 3:
+            return
+        padded = parts[1] + "=" * (-len(parts[1]) % 4)
+        role = json.loads(base64.urlsafe_b64decode(padded)).get("role")
+        if role and role != "service_role":
+            logger.error(
+                "SUPABASE_KEY a le rôle '%s', pas 'service_role'. Avec la Row "
+                "Level Security activée, tous les inserts/updates du backend "
+                "vont échouer (42501). Utilise la clé 'service_role' de "
+                "Project Settings > API sur Supabase.",
+                role,
+            )
+    except Exception:
+        pass  # heuristique best-effort — ne doit jamais empêcher le démarrage
+
 
 # === CLIENT SUPABASE (singleton) ===
 @lru_cache
@@ -34,6 +77,7 @@ def get_supabase() -> Client:
         raise RuntimeError(
             "SUPABASE_URL et SUPABASE_KEY doivent être définis (voir .env.example)."
         )
+    _warn_if_not_service_role(SUPABASE_KEY)
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # === DÉPENDANCE FASTAPI : UTILISATEUR COURANT ===
