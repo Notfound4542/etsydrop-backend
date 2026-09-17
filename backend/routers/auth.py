@@ -121,9 +121,12 @@ async def _resolve_shop_id(shop_name: str) -> Optional[int]:
     """
     try:
         shop = await etsy_get(f"/shops/{shop_name}")
-        return shop.get("shop_id") if isinstance(shop, dict) else None
+        resolved = shop.get("shop_id") if isinstance(shop, dict) else None
+        if resolved:
+            logger.info("Shop résolu : shop_name=%s -> shop_id=%s", shop_name, resolved)
+        return resolved
     except Exception as exc:
-        logger.warning("Résolution shop_id échouée pour shop_name=%s : %s", shop_name, type(exc).__name__)
+        logger.warning("Résolution shop_id échouée pour shop_name=%s : %s: %s", shop_name, type(exc).__name__, exc)
         return None
 
 
@@ -151,7 +154,7 @@ async def _sync_etsy_listings(user_id: str, access_token: str, shop_id: Optional
         )
         etsy_listings = payload.get("results", []) if isinstance(payload, dict) else []
     except Exception as exc:
-        logger.warning("Sync listings Etsy échouée pour user_id=%s : %s", user_id, type(exc).__name__)
+        logger.warning("Sync listings Etsy échouée pour user_id=%s : %s: %s", user_id, type(exc).__name__, exc)
         return 0
 
     # Les fiches importées doivent rester compatibles avec le modèle Listing
@@ -213,7 +216,7 @@ async def _sync_etsy_listings(user_id: str, access_token: str, shop_id: Optional
     try:
         get_supabase().table("listings").upsert(rows, on_conflict="user_id,etsy_listing_id").execute()
     except Exception as exc:
-        logger.warning("Écriture des listings Etsy échouée pour user_id=%s : %s", user_id, type(exc).__name__)
+        logger.warning("Écriture des listings Etsy échouée pour user_id=%s : %s: %s", user_id, type(exc).__name__, exc)
         return 0
 
     return len(rows)
@@ -264,17 +267,29 @@ async def etsy_callback(
             entry["user_id"], shop_name,
         )
 
-    supabase = get_supabase()
-    supabase.table("etsy_tokens").upsert(
-        {
-            "user_id": entry["user_id"],
-            "access_token": tokens["access_token"],
-            "refresh_token": tokens["refresh_token"],
-            "expires_in": tokens.get("expires_in"),
-            "shop_id": shop_id,
-            "shop_name": shop_name,
-        }
-    ).execute()
+    # Jamais laissé remonter tel quel : une exception ici (ex. colonnes
+    # shop_id/shop_name pas encore migrées en base — voir database_schema.sql)
+    # ferait planter tout le callback en 500 brut, juste après que
+    # l'utilisateur ait validé le consentement côté Etsy, sans aucune
+    # redirection — la pire UX possible à ce stade précis du flow.
+    try:
+        get_supabase().table("etsy_tokens").upsert(
+            {
+                "user_id": entry["user_id"],
+                "access_token": tokens["access_token"],
+                "refresh_token": tokens["refresh_token"],
+                "expires_in": tokens.get("expires_in"),
+                "shop_id": shop_id,
+                "shop_name": shop_name,
+            }
+        ).execute()
+    except Exception as exc:
+        logger.error(
+            "Échec de l'enregistrement du token Etsy pour user_id=%s : %s: %s",
+            entry["user_id"], type(exc).__name__, exc,
+            exc_info=True,
+        )
+        return RedirectResponse(f"{FRONTEND_URL}/?etsy_error=token_save_failed")
 
     synced = await _sync_etsy_listings(entry["user_id"], tokens["access_token"], shop_id)
     logger.info("Connexion Etsy réussie pour user_id=%s : %d fiches importées.", entry["user_id"], synced)

@@ -336,27 +336,25 @@
       const me = await window.EDAPI.me().catch(() => null);
       if (me) state.etsyConnected = !!me.etsy_shop_connected;
 
-      // /api/analytics/summary lit une table jamais alimentée par aucun job
-      // de sync (voir backend/routers/analytics.py) — elle est toujours
-      // vide. /api/analytics/revenue, lui, interroge les receipts Etsy en
-      // direct avec le token OAuth stocké : c'est la seule source de
-      // revenu réellement connectée à la boutique.
+      // Une fois la boutique connectée, les données réelles (même vides/à
+      // zéro) DOIVENT remplacer les données de démo — sinon un échec d'appel
+      // ou une boutique sans historique laisse les faux chiffres/produits de
+      // démo affichés, indiscernables de vraies données pour l'utilisateur.
+      // Avant connexion, les données de démo restent (aperçu du produit).
       if (me && me.etsy_shop_connected) {
+        // /api/analytics/summary lit une table jamais alimentée par aucun job
+        // de sync (voir backend/routers/analytics.py) — toujours vide.
+        // /api/analytics/revenue interroge les receipts Etsy en direct avec
+        // le token OAuth stocké : seule source de revenu réellement connectée.
         const revenue = await window.EDAPI.revenue('30d').catch(() => null);
-        if (revenue) {
-          state.revenueTotal = revenue.revenue_gross;
-          state.revenueDisplay = revenue.revenue_gross;
-        }
-      }
+        state.revenueTotal = revenue ? revenue.revenue_gross : 0;
+        state.revenueDisplay = revenue ? revenue.revenue_gross : 0;
 
-      const listings = await window.EDAPI.listings().catch(() => null);
-      if (Array.isArray(listings) && listings.length) {
-        state.catalogProducts = listings.map(_mapListing);
-      }
+        const listings = await window.EDAPI.listings().catch(() => null);
+        state.catalogProducts = Array.isArray(listings) ? listings.map(_mapListing) : [];
 
-      const orders = await window.EDAPI.orders().catch(() => null);
-      if (Array.isArray(orders) && orders.length) {
-        state.orders = orders.map(_mapOrder);
+        const orders = await window.EDAPI.orders().catch(() => null);
+        state.orders = Array.isArray(orders) ? orders.map(_mapOrder) : [];
       }
     } catch(e) {
       console.warn('[EtsyDrop] Erreur chargement données:', e);
@@ -662,12 +660,16 @@
         <input type="text" placeholder="Rechercher un produit, mot-clé, commande…" class="w-full bg-gray-100 border border-transparent focus:border-accent focus:bg-white rounded-lg pl-9 pr-3 py-2 text-sm outline-none transition">
       </div>
       <div class="ml-auto flex items-center gap-1.5 md:gap-3 flex-shrink-0">
-        <span class="hidden md:flex items-center gap-1.5 text-[11px] font-semibold text-accent bg-accent-light px-2.5 py-1 rounded-full">
+        <!-- Reflète le vrai etsyConnected (renseigné par window._edPostAuth
+             après connexion) — c'était un badge statique en dur avant,
+             affichant "Boutique connectée" même sans aucune boutique liée. -->
+        <span class="hidden md:flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1 rounded-full"
+              :class="etsyConnected ? 'text-accent bg-accent-light' : 'text-gray-500 bg-gray-100'">
           <span class="relative flex w-1.5 h-1.5">
-            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-accent opacity-75"></span>
-            <span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-accent"></span>
+            <span x-show="etsyConnected" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-accent opacity-75"></span>
+            <span class="relative inline-flex rounded-full h-1.5 w-1.5" :class="etsyConnected ? 'bg-accent' : 'bg-gray-400'"></span>
           </span>
-          Boutique connectée
+          <span x-text="etsyConnected ? 'Boutique connectée' : 'Boutique non connectée'"></span>
         </span>
         <button @click="toggleDark()" class="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-600" :title="darkMode ? 'Passer en mode clair' : 'Passer en mode sombre'">
           <i class="fa-solid" :class="darkMode ? 'fa-sun' : 'fa-moon'"></i>
@@ -785,10 +787,14 @@
       <template x-if="page==='catalogue'"><div class="fade-enter space-y-6 max-w-7xl mx-auto">
 
         <div class="grid grid-cols-4 gap-4">
-          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Produits actifs</p><p class="text-2xl font-extrabold">6</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +1 vs mois dernier</p></div>
-          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Variantes totales</p><p class="text-2xl font-extrabold">88</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +6 vs mois dernier</p></div>
-          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Marge moyenne</p><p class="text-2xl font-extrabold text-accent-dark">38,2%</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +1,4 pt vs mois dernier</p></div>
-          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Ruptures de stock</p><p class="text-2xl font-extrabold text-rose-500">1</p><p class="text-xs text-rose-500 font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +1 vs mois dernier</p></div>
+          <!-- Calculées depuis catalogProducts (démo tant que non connecté,
+               vraies fiches importées une fois la boutique Etsy connectée)
+               plutôt que des chiffres fixes — sinon un catalogue vide
+               affichait quand même "6 produits actifs". -->
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Produits actifs</p><p class="text-2xl font-extrabold" x-text="catalogProducts.length"></p></div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Variantes totales</p><p class="text-2xl font-extrabold" x-text="catalogProducts.reduce((sum, p) => sum + (p.variantsCount || 0), 0)"></p></div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Marge moyenne</p><p class="text-2xl font-extrabold text-accent-dark" x-text="(catalogProducts.length ? (catalogProducts.reduce((sum, p) => sum + (p.margin || 0), 0) / catalogProducts.length) : 0).toFixed(1).replace('.', ',') + '%'"></p></div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Ruptures de stock</p><p class="text-2xl font-extrabold text-rose-500" x-text="catalogProducts.filter(p => p.stock === 'rupture').length"></p></div>
         </div>
 
         <div class="grid grid-cols-3 gap-4">
@@ -815,6 +821,16 @@
               </div>
             </div>
           </template>
+        </div>
+
+        <!-- État vide réel : boutique connectée mais sans fiche importée
+             (échec de sync ou boutique Etsy sans fiche active) — jamais de
+             données de démo affichées une fois réellement connecté. -->
+        <div x-show="etsyConnected && catalogProducts.length === 0" class="bg-white rounded-xl border border-gray-200 shadow-card p-10 text-center">
+          <i class="fa-solid fa-box-open text-3xl text-gray-300 mb-3"></i>
+          <p class="font-semibold text-sm text-ink-900 mb-1">Aucune fiche trouvée</p>
+          <p class="text-xs text-gray-500 mb-4">Ta boutique Etsy est connectée mais aucune fiche active n'a pu être importée.</p>
+          <button @click="page='settings'" class="bg-ink-900 hover:bg-ink-700 text-white text-xs font-semibold px-4 py-2 rounded-lg transition">Vérifier la connexion Etsy</button>
         </div>
 
         <!-- Modal fiche produit -->
@@ -1061,11 +1077,15 @@
       <template x-if="page==='orders'"><div class="fade-enter space-y-6 max-w-7xl mx-auto">
 
         <div class="grid grid-cols-5 gap-4">
-          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Total (30j)</p><p class="text-xl font-extrabold">342</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +9,6% vs mois dernier</p></div>
-          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Auto-transmises</p><p class="text-xl font-extrabold text-accent-dark">336</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +11 vs mois dernier</p></div>
-          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">En attente fournisseur</p><p class="text-xl font-extrabold text-amber-500">12</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-down"></i> -3 vs mois dernier</p></div>
-          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Retards &gt;10j</p><p class="text-xl font-extrabold text-rose-500">6</p><p class="text-xs text-rose-500 font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +2 vs mois dernier</p></div>
-          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Retours/SAV</p><p class="text-xl font-extrabold">4</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-down"></i> -1 vs mois dernier</p></div>
+          <!-- Le "342" de démo représente un volume mensuel plus riche que les
+               7 lignes d'exemple listées plus bas — préservé tant que non
+               connecté. Une fois connecté, ces cartes reflètent les vraies
+               commandes importées (0 si aucune), jamais le chiffre de démo. -->
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Total (30j)</p><p class="text-xl font-extrabold" x-text="etsyConnected ? orders.length : 342"></p></div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Auto-transmises</p><p class="text-xl font-extrabold text-accent-dark" x-text="etsyConnected ? orders.filter(o => o.status !== 'pending_supplier').length : 336"></p></div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">En attente fournisseur</p><p class="text-xl font-extrabold text-amber-500" x-text="etsyConnected ? orders.filter(o => o.status === 'pending_supplier').length : 12"></p></div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Retards &gt;10j</p><p class="text-xl font-extrabold text-rose-500" x-text="etsyConnected ? orders.filter(o => o.status === 'delayed').length : 6"></p></div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Retours/SAV</p><p class="text-xl font-extrabold" x-text="etsyConnected ? orders.filter(o => o.status === 'return_requested').length : 4"></p></div>
         </div>
 
         <div class="bg-white rounded-xl border border-gray-200 shadow-card">
@@ -1094,6 +1114,16 @@
                   <td class="text-gray-400 font-mono text-xs" x-text="o.tracking"></td>
                 </tr>
               </template>
+              <!-- État vide réel : boutique connectée mais aucune commande
+                   importée — jamais les 7 commandes de démo une fois
+                   réellement connecté. -->
+              <tr x-show="etsyConnected && orders.length === 0">
+                <td colspan="7" class="py-10 text-center">
+                  <i class="fa-solid fa-inbox text-3xl text-gray-300 mb-3 block"></i>
+                  <p class="font-semibold text-sm text-ink-900 mb-1">Aucune commande trouvée</p>
+                  <p class="text-xs text-gray-500">Ta boutique Etsy est connectée mais aucune commande n'a encore été synchronisée.</p>
+                </td>
+              </tr>
             </tbody>
           </table>
           </div>
