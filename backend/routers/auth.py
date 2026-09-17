@@ -34,12 +34,20 @@ router = APIRouter()
 logger = logging.getLogger("etsydrop.auth")
 
 # === CONFIGURATION (jamais loggée) ===
-ETSY_API_KEY = os.getenv("ETSY_API_KEY")
-ETSY_API_SECRET = os.getenv("ETSY_API_SECRET")
-ETSY_REDIRECT_URI = os.getenv("ETSY_REDIRECT_URI", "http://localhost:8000/api/auth/etsy/callback")
+# .strip().strip("\"'") : Railway a déjà causé un bug identique sur les
+# variables CORS (guillemets collés en copiant-collant la valeur dans le
+# dashboard — voir le commit "Update CORS settings for GitHub Pages" sur
+# main.py). Même traitement défensif ici pour ne pas répéter l'incident.
+def _clean_env(name: str, default: str = "") -> str:
+    return os.getenv(name, default).strip().strip("\"'")
+
+
+ETSY_API_KEY = _clean_env("ETSY_API_KEY") or None
+ETSY_API_SECRET = _clean_env("ETSY_API_SECRET") or None
+ETSY_REDIRECT_URI = _clean_env("ETSY_REDIRECT_URI", "http://localhost:8000/api/auth/etsy/callback")
 # URL du frontend vers laquelle renvoyer le navigateur une fois l'échange terminé
 # (même variable que celle utilisée pour les redirections Stripe — routers/billing.py).
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5500")
+FRONTEND_URL = _clean_env("FRONTEND_URL", "http://localhost:5500")
 
 ETSY_AUTHORIZE_URL = "https://www.etsy.com/oauth/connect"
 ETSY_TOKEN_URL = "https://api.etsy.com/v3/public/oauth/token"

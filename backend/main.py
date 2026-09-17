@@ -102,7 +102,15 @@ async def add_security_headers(request: Request, call_next):
 # cela pourrait exposer un chemin de fichier, une clé partielle ou un détail interne.
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
-        logger.error("Erreur non gérée sur %s %s : %s", request.method, request.url.path, type(exc).__name__)
+        # exc_info=True : la réponse au client reste générique (jamais de détail
+        # interne exposé), mais la stack trace complète part dans les logs Railway
+        # — sans ça, un type(exc).__name__ seul ne suffit pas à diagnostiquer quoi
+        # que ce soit en production.
+        logger.error(
+                "Erreur non gérée sur %s %s : %s: %s",
+                request.method, request.url.path, type(exc).__name__, exc,
+                exc_info=True,
+        )
         return JSONResponse(status_code=500, content={"detail": "Erreur interne du serveur."})
 
 
