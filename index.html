@@ -136,13 +136,15 @@
     margin:     (params)       => api('/api/analytics/margin?' + new URLSearchParams(params).toString()),
 
     // Listings
-    listings:   (stockStatus)  => api('/api/listings/' + (stockStatus ? '?stock_status=' + stockStatus : '')),
-    listing:    (id)           => api('/api/listings/' + id),
+    listings:     (stockStatus) => api('/api/listings/' + (stockStatus ? '?stock_status=' + stockStatus : '')),
+    listing:      (id)          => api('/api/listings/' + id),
+    syncListings: ()            => api('/api/listings/sync', { method: 'POST' }),
 
     // Orders
     orders:     ()             => api('/api/orders/'),
     order:      (id)           => api('/api/orders/' + id),
     fulfill:    (id, d)        => api('/api/orders/' + id + '/fulfill', { method:'POST', body:JSON.stringify(d) }),
+    syncOrders: ()             => api('/api/orders/sync', { method: 'POST' }),
 
     // Etsy OAuth
     me:             ()  => api('/api/auth/me'),
@@ -341,6 +343,14 @@
 
     state.currentUserEmail = _session?.user?.email || null;
 
+    // Garde explicite : sans token de session, tout appel /api/... échouerait
+    // de toute façon (voir api() > 'Non authentifié'), mais autant ne pas
+    // tenter les requêtes du tout plutôt que les laisser échouer une à une.
+    if (!_session?.access_token) {
+      console.warn('[EtsyDrop] _edPostAuth() : pas de session active (sessionStorage.ed_session vide) — chargement des données réelles ignoré.');
+      return;
+    }
+
     try {
       const me = await window.EDAPI.me().catch(() => null);
       if (me) state.etsyConnected = !!me.etsy_shop_connected;
@@ -351,6 +361,13 @@
       // démo affichés, indiscernables de vraies données pour l'utilisateur.
       // Avant connexion, les données de démo restent (aperçu du produit).
       if (me && me.etsy_shop_connected) {
+        const listings = await window.EDAPI.listings().catch(() => null);
+        state.catalogProducts = Array.isArray(listings) ? listings.map(_mapListing) : [];
+
+        const orders = await window.EDAPI.orders().catch(() => null);
+        state.orders = Array.isArray(orders) ? orders.map(_mapOrder) : [];
+        state.ordersCount = Array.isArray(orders) ? orders.length : 0;
+
         // /api/analytics/revenue interroge les receipts Etsy en direct avec le
         // token OAuth stocké — seule source de revenu réellement connectée.
         // revenue_net = revenu moins frais Etsy uniquement (pas de coût
@@ -361,14 +378,7 @@
         state.revenueTotal = revenue ? revenue.revenue_gross : 0;
         state.revenueDisplay = revenue ? revenue.revenue_gross : 0;
         state.netProfit = revenue ? revenue.revenue_net : 0;
-        state.ordersCount = revenue ? revenue.orders_count : 0;
         state.topProductTitle = (revenue && revenue.top_products && revenue.top_products[0]) ? revenue.top_products[0].title : null;
-
-        const listings = await window.EDAPI.listings().catch(() => null);
-        state.catalogProducts = Array.isArray(listings) ? listings.map(_mapListing) : [];
-
-        const orders = await window.EDAPI.orders().catch(() => null);
-        state.orders = Array.isArray(orders) ? orders.map(_mapOrder) : [];
       }
     } catch(e) {
       console.warn('[EtsyDrop] Erreur chargement données:', e);
@@ -441,6 +451,28 @@
       if (data.authorize_url) window.location.href = data.authorize_url;
     } catch(e) {
       alert('Erreur Etsy : ' + e.message);
+    }
+  };
+
+  window.edResyncEtsy = async function() {
+    const rootEl = document.querySelector('[x-data]');
+    const state = rootEl && window.Alpine ? window.Alpine.$data(rootEl) : null;
+    if (state) state.etsyResyncing = true;
+    try {
+      // Les deux syncs sont indépendantes (fiches et commandes) : un échec de
+      // l'une ne doit pas empêcher l'autre, ni empêcher de recharger l'état
+      // (_edPostAuth) avec ce qui a effectivement été synchronisé.
+      const [listingsResult, ordersResult] = await Promise.all([
+        window.EDAPI.syncListings().catch((e) => ({ error: e.message })),
+        window.EDAPI.syncOrders().catch((e) => ({ error: e.message })),
+      ]);
+      await window._edPostAuth();
+      const parts = [];
+      parts.push(listingsResult.error ? ('fiches : erreur (' + listingsResult.error + ')') : (listingsResult.synced + ' fiche(s) synchronisée(s)'));
+      parts.push(ordersResult.error ? ('commandes : erreur (' + ordersResult.error + ')') : (ordersResult.synced + ' commande(s) synchronisée(s)'));
+      alert('Resynchronisation Etsy : ' + parts.join(', '));
+    } finally {
+      if (state) state.etsyResyncing = false;
     }
   };
 
@@ -768,7 +800,7 @@
             </div>
             <p class="text-2xl font-extrabold text-ink-900 num" x-text="etsyConnected ? ordersCount : 342"></p>
             <p x-show="!etsyConnected" class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +9,6% vs mois dernier (démo)</p>
-            <p x-show="etsyConnected" class="text-xs text-gray-400 mt-1">30 derniers jours, commandes payées.</p>
+            <p x-show="etsyConnected" class="text-xs text-gray-400 mt-1">Commandes payées synchronisées (voir Paramètres pour resynchroniser).</p>
           </div>
           <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4">
             <div class="flex items-center justify-between mb-2">
@@ -941,7 +973,7 @@
                   </div>
 
                   <div class="grid grid-cols-3 gap-4">
-                    <template x-for="section in lqsChecks" :key="section.section">
+                    <template x-for="section in lqsChecksFor(selectedProduct.tags.length)" :key="section.section">
                       <div>
                         <p class="text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5" x-text="section.section"></p>
                         <div class="space-y-1.5">
@@ -1762,6 +1794,14 @@
             <button x-show="etsyConnected" @click="edDisconnectEtsy()" class="border border-gray-200 hover:bg-gray-50 text-gray-600 font-semibold text-sm px-4 py-2 rounded-lg transition">
               Déconnecter la boutique
             </button>
+            <!-- Resync manuelle : nécessaire quand shop_id/le token ont été
+                 corrigés autrement qu'en repassant par tout le flow OAuth
+                 (etsy_callback est le seul autre déclencheur automatique). -->
+            <button x-show="etsyConnected" @click="edResyncEtsy()" :disabled="etsyResyncing"
+                    class="border border-gray-200 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed text-gray-600 font-semibold text-sm px-4 py-2 rounded-lg transition">
+              <i class="fa-solid fa-rotate mr-1.5" :class="{ 'fa-spin': etsyResyncing }"></i>
+              <span x-text="etsyResyncing ? 'Synchronisation…' : 'Resynchroniser fiches & commandes'"></span>
+            </button>
             <button x-show="currentUserEmail" @click="edLogout()" class="text-xs text-gray-400 hover:text-gray-600 underline">Se déconnecter d'EtsyDrop</button>
           </div>
         </div>
@@ -1843,6 +1883,7 @@ function app() {
     etsyConnected: false,
     currentUserEmail: null,
     etsyShopNameInput: '',
+    etsyResyncing: false,
 
     // ===== Commandes (Etsy — flux de fulfillment) =====
     // Statut brut = valeur de l'enum OrderStatus (backend/models.py) — le
@@ -2308,7 +2349,14 @@ function app() {
         + '</svg>';
     },
 
-    // ===== Listing Quality Score (shared by the SEO page and the catalogue modal) =====
+    // ===== Listing Quality Score =====
+    // Le reste de ce heuristique (titre/description) reste un exemple
+    // statique — l'analyse réelle de titre/description nécessiterait un
+    // moteur NLP dédié, hors scope d'une correction de bug ponctuelle.
+    // Utilisé tel quel par la page SEO (exemple générique, non lié à une
+    // fiche précise). Le modal Catalogue, lui, appelle lqsChecksFor()
+    // ci-dessous pour au moins refléter le vrai nombre de tags de la fiche
+    // réellement ouverte.
     lqsScore: 78,
     lqsChecks: [
       { section: 'Titre', items: [
@@ -2327,6 +2375,14 @@ function app() {
         { status: 'ok', text: 'Pas de répétition avec le titre' }
       ]}
     ],
+    lqsChecksFor(tagsCount) {
+      const checks = JSON.parse(JSON.stringify(this.lqsChecks));
+      const tagsSection = checks.find(s => s.section === 'Tags');
+      if (tagsSection) {
+        tagsSection.items[0] = { status: tagsCount >= 13 ? 'ok' : 'warning', text: tagsCount + '/13 tags utilisés' };
+      }
+      return checks;
+    },
     lqsColor(score) {
       if (score < 50) return '#F43F5E';
       if (score < 70) return '#F59E0B';

@@ -12,13 +12,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from database import get_current_user, get_supabase
 from etsy_client import get_etsy_access_token, get_etsy_shop_id, sync_etsy_listings
-from models import CurrentUser, Listing, ListingCreate
+from models import CurrentUser, Listing, ListingCreate, SyncResult
 
 router = APIRouter()
 
 
 # === SYNCHRONISATION MANUELLE DEPUIS ETSY ===
-@router.post("/sync")
+@router.post("/sync", response_model=SyncResult)
 async def sync_listings(user: CurrentUser = Depends(get_current_user)):
     """
     Redéclenche l'import des fiches actives depuis la boutique Etsy connectée,

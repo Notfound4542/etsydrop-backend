@@ -12,13 +12,13 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from database import get_current_user, get_supabase
 from etsy_client import get_etsy_access_token, get_etsy_shop_id, sync_etsy_orders
-from models import CurrentUser, Order, OrderFulfillRequest
+from models import CurrentUser, Order, OrderFulfillRequest, SyncResult
 
 router = APIRouter()
 
 
 # === SYNCHRONISATION MANUELLE DEPUIS ETSY ===
-@router.post("/sync")
+@router.post("/sync", response_model=SyncResult)
 async def sync_orders(user: CurrentUser = Depends(get_current_user)):
     """Redéclenche l'import des commandes payées depuis la boutique Etsy connectée."""
     access_token = get_etsy_access_token(user.id)

@@ -110,6 +110,11 @@ class Order(BaseModel):
     created_at: datetime
 
 
+class SyncResult(BaseModel):
+    synced: int = Field(..., ge=0)
+    shop_id: int
+
+
 class OrderFulfillRequest(BaseModel):
     supplier: SupplierName
     tracking_number: Optional[str] = Field(None, max_length=64)
