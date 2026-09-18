@@ -121,6 +121,9 @@
       const err = await res.json().catch(() => ({ detail: 'HTTP ' + res.status }));
       throw new Error(err.detail || 'API error ' + res.status);
     }
+    // 204 No Content (DELETE fournisseur / produit / profil de livraison) :
+    // pas de corps a parser.
+    if (res.status === 204) return null;
     return res.json();
   }
 
@@ -185,6 +188,39 @@
     // Billing
     billingStatus:   ()        => api('/api/billing/status'),
     billingCheckout: (d)       => api('/api/billing/create-checkout', { method:'POST', body:JSON.stringify(d) }),
+
+    // === PHASE 2 — Fournisseurs (backend/routers/suppliers.py) ===
+    // api_key/api_secret : envoyes en creation/modification, jamais renvoyes
+    // (models.Supplier n'expose que has_api_key).
+    suppliers:                  ()             => api('/api/suppliers/'),
+    supplierCreate:             (d)            => api('/api/suppliers/', { method:'POST', body:JSON.stringify(d) }),
+    supplierUpdate:             (id, d)        => api('/api/suppliers/' + id, { method:'PATCH', body:JSON.stringify(d) }),
+    supplierDelete:             (id)           => api('/api/suppliers/' + id, { method:'DELETE' }),
+    supplierProducts:           (id)           => api('/api/suppliers/' + id + '/products'),
+    supplierProductCreate:      (id, d)        => api('/api/suppliers/' + id + '/products', { method:'POST', body:JSON.stringify(d) }),
+    supplierProductDelete:      (sid, pid)     => api('/api/suppliers/' + sid + '/products/' + pid, { method:'DELETE' }),
+    supplierProductLink:        (pid, etsyId)  => api('/api/suppliers/products/' + pid + '/link', { method:'PATCH', body:JSON.stringify({ linked_etsy_listing_id: etsyId }) }),
+    supplierImport:             (id)           => api('/api/suppliers/' + id + '/products/import', { method:'POST' }),
+    supplierConversations:      ()             => api('/api/suppliers/conversations/'),
+    supplierConversationCreate: (d)            => api('/api/suppliers/conversations/', { method:'POST', body:JSON.stringify(d) }),
+    supplierConversationUpdate: (id, status)   => api('/api/suppliers/conversations/' + id, { method:'PATCH', body:JSON.stringify({ status }) }),
+
+    // === PHASE 2 — Prix & livraison par pays (backend/routers/pricing.py) ===
+    shippingProfiles:      ()                    => api('/api/pricing/profiles/'),
+    shippingProfileCreate: (d)                   => api('/api/pricing/profiles/', { method:'POST', body:JSON.stringify(d) }),
+    shippingProfileDelete: (id)                  => api('/api/pricing/profiles/' + id, { method:'DELETE' }),
+    pricingAnalyze:        (d)                   => api('/api/pricing/analyze', { method:'POST', body:JSON.stringify(d) }),
+    pricingApply:          (listingId, priceEur) => api('/api/pricing/apply/' + listingId, { method:'POST', body:JSON.stringify({ price_eur: priceEur }) }),
+
+    // === PHASE 2 — SEO (backend/routers/seo.py) ===
+    seoAnalyze:  (listingId)    => api('/api/seo/analyze/' + listingId),
+    seoTrending: (params)       => api('/api/seo/keywords/trending?' + new URLSearchParams(params).toString()),
+    seoOptimize: (listingId)    => api('/api/seo/optimize/' + listingId, { method:'POST' }),
+    seoApply:    (listingId, d) => api('/api/seo/apply/' + listingId, { method:'POST', body:JSON.stringify(d) }),
+
+    // === PHASE 2 — Test produit / simulation d'achat (backend/routers/product_test.py) ===
+    productTestSimulate: (d)         => api('/api/product-test/simulate', { method:'POST', body:JSON.stringify(d) }),
+    productTestResults:  (listingId) => api('/api/product-test/results/' + listingId),
 
     // Health
     health: () => fetch(BACKEND + '/api/health').then(r => r.json()),
@@ -403,6 +439,14 @@
         state.etsyConnected = !!me.etsy_shop_connected;
         state.etsyShopName = me.etsy_shop_name || null;
       }
+
+      // Phase 2 — fournisseurs et profils de livraison appartiennent a
+      // l'utilisateur EtsyDrop, pas a la boutique Etsy : charges des qu'une
+      // session existe, boutique connectee ou non. Chaque loader gere ses
+      // propres erreurs (jamais bloquant pour le reste du chargement).
+      state.loggedIn = true;
+      if (typeof state.loadSuppliers === 'function') state.loadSuppliers();
+      if (typeof state.loadShippingProfiles === 'function') state.loadShippingProfiles();
 
       // Une fois la boutique connectée, les données réelles (même vides/à
       // zéro) DOIVENT remplacer les données de démo — sinon un échec d'appel
@@ -1074,25 +1118,32 @@
 
                 <!-- Listing Quality Score -->
                 <div class="border border-gray-100 rounded-xl p-4">
-                  <h3 class="font-bold text-sm text-ink-900">Listing Quality Score</h3>
+                  <div class="flex items-center justify-between gap-2">
+                    <h3 class="font-bold text-sm text-ink-900">Listing Quality Score</h3>
+                    <!-- PHASE 2 : analyse serveur (/api/seo/analyze) pour une fiche réelle, exemple sinon -->
+                    <span x-show="modalSeo" class="tag-pill bg-accent-light text-accent-dark"><i class="fa-solid fa-server"></i> Analyse réelle</span>
+                    <span x-show="!modalSeo && !modalSeoLoading" class="tag-pill bg-gray-100 text-gray-700" x-text="isRealListing(selectedProduct) ? 'Estimation' : 'Exemple'"></span>
+                  </div>
                   <p class="text-xs text-gray-500 mb-3" x-text="selectedProduct.name"></p>
+                  <p x-show="modalSeoError" class="text-xs text-rose-500 mb-2" x-text="modalSeoError"></p>
+                  <div x-show="modalSeoLoading" class="skeleton h-28 w-48 mx-auto rounded-xl mb-2"></div>
 
-                  <div class="relative w-48 h-28 mx-auto mb-2">
+                  <div x-show="!modalSeoLoading" class="relative w-48 h-28 mx-auto mb-2">
                     <svg viewBox="0 0 200 110" class="w-full h-full">
                       <path class="lqs-bg" d="M20,100 A80,80 0 0,1 180,100" fill="none" stroke-width="14" stroke-linecap="round"></path>
-                      <path d="M20,100 A80,80 0 0,1 180,100" fill="none" :stroke="lqsColor(lqsScore)" stroke-width="14" stroke-linecap="round"
-                            stroke-dasharray="251.33" :stroke-dashoffset="lqsArcOffset(lqsScore)" style="transition: stroke-dashoffset .6s ease, stroke .3s ease;"></path>
+                      <path d="M20,100 A80,80 0 0,1 180,100" fill="none" :stroke="lqsColor(modalLqsScore())" stroke-width="14" stroke-linecap="round"
+                            stroke-dasharray="251.33" :stroke-dashoffset="lqsArcOffset(modalLqsScore())" style="transition: stroke-dashoffset .6s ease, stroke .3s ease;"></path>
                     </svg>
                     <div class="absolute inset-0 flex flex-col items-center justify-end pb-1">
-                      <span class="text-3xl font-extrabold text-ink-900 num" x-text="lqsScore"></span>
+                      <span class="text-3xl font-extrabold text-ink-900 num" x-text="modalLqsScore()"></span>
                       <span class="text-[11px] text-gray-400 font-semibold">/ 100</span>
                     </div>
                   </div>
 
-                  <div class="grid grid-cols-3 gap-4">
-                    <template x-for="section in lqsChecksFor(selectedProduct.tags.length)" :key="section.section">
+                  <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    <template x-for="section in modalLqsChecks()" :key="section.section">
                       <div>
-                        <p class="text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5" x-text="section.section"></p>
+                        <p class="text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5"><span x-text="section.section"></span><span x-show="typeof section.score === 'number'" class="ml-1 num" x-text="'· ' + section.score + '/100'"></span></p>
                         <div class="space-y-1.5">
                           <template x-for="(item, i) in section.items" :key="i">
                             <div class="flex items-center gap-2 text-xs">
@@ -1103,6 +1154,12 @@
                         </div>
                       </div>
                     </template>
+                  </div>
+                  <div x-show="modalSeo && modalSeo.suggestions.length" class="mt-4 pt-3 border-t border-gray-100">
+                    <p class="text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Suggestions</p>
+                    <ul class="space-y-1">
+                      <template x-for="s in (modalSeo ? modalSeo.suggestions : [])" :key="s"><li class="text-xs text-gray-600 flex gap-2"><i class="fa-solid fa-arrow-right text-accent text-[10px] mt-1"></i><span x-text="s"></span></li></template>
+                    </ul>
                   </div>
                 </div>
 
@@ -1130,10 +1187,11 @@
                   <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
                     <div class="flex items-center gap-2">
                       <h3 class="font-bold text-sm text-ink-900">Prix par pays</h3>
-                      <span class="tag-pill bg-amber-100 text-amber-700 text-[10px]">Estimation — calculé, pas une donnée Etsy</span>
+                      <span x-show="!modalPricing" class="tag-pill bg-amber-100 text-amber-700 text-[10px]">Estimation — calculé, pas une donnée Etsy</span>
+                      <span x-show="modalPricing" class="tag-pill bg-accent-light text-accent-dark text-[10px]"><i class="fa-solid fa-server"></i> Moteur réel (TVA, change, frais Etsy)</span>
                     </div>
                     <label class="flex items-center gap-2 text-xs font-semibold text-gray-600 cursor-pointer select-none">
-                      <input type="checkbox" x-model="selectedProduct.freeShipping" class="accent-accent w-4 h-4">
+                      <input type="checkbox" x-model="selectedProduct.freeShipping" @change="refreshModalPricing()" class="accent-accent w-4 h-4">
                       Livraison gratuite (inclut le port dans le prix)
                     </label>
                   </div>
@@ -1178,7 +1236,52 @@
                   </div>
                   </template>
 
-                  <template x-if="hasCostPrice()">
+                  <p x-show="modalPricingError" class="text-xs text-rose-500 mb-2" x-text="modalPricingError"></p>
+                  <div x-show="hasCostPrice() && modalPricingLoading && !modalPricing" class="space-y-2"><div class="skeleton h-8 rounded-lg"></div><div class="skeleton h-8 rounded-lg"></div><div class="skeleton h-8 rounded-lg"></div></div>
+
+                  <!-- === PHASE 2 — Analyse serveur (PricingAnalyzeResponse) === -->
+                  <template x-if="hasCostPrice() && modalPricing">
+                  <div class="space-y-3 fade-enter">
+                    <div class="overflow-x-auto">
+                    <table class="w-full text-sm min-w-[860px]">
+                      <thead><tr class="text-left text-xs text-gray-500 border-b border-gray-100">
+                        <th class="pb-2 font-semibold">Pays</th><th class="pb-2 font-semibold">Prix recommandé</th><th class="pb-2 font-semibold">TVA</th><th class="pb-2 font-semibold">Frais Etsy</th><th class="pb-2 font-semibold">Livraison</th><th class="pb-2 font-semibold">Change</th><th class="pb-2 font-semibold">Marge nette</th><th class="pb-2 font-semibold">Au prix actuel</th>
+                      </tr></thead>
+                      <tbody class="divide-y divide-gray-50">
+                        <template x-for="r in modalPricing.results" :key="'mp-'+r.country_code">
+                          <tr class="hover:bg-gray-50 transition">
+                            <td class="py-2 font-medium" x-text="r.flag + ' ' + r.country_name"></td>
+                            <td><span class="font-semibold num" x-text="fmtEur(r.recommended_price_eur)"></span><span x-show="r.currency !== 'EUR'" class="text-[11px] text-gray-400 ml-1" x-text="'≈ ' + fmtLocal(r.recommended_price_local, r.currency)"></span></td>
+                            <td><span class="num" x-text="fmtEur(r.vat_eur)"></span><span class="block text-[10px] text-gray-400 leading-tight" x-text="r.vat_label"></span></td>
+                            <td class="num" x-text="fmtEur(r.etsy_fees_eur)"></td>
+                            <td x-text="r.shipping_charged_eur > 0 ? fmtEur(r.shipping_charged_eur) : 'Gratuite'"></td>
+                            <td class="num" x-text="fmtEur(r.currency_fee_eur)"></td>
+                            <td><span class="tag-pill" :class="marginStatusPill(r.reachable ? r.status : 'bad')" x-text="r.reachable ? fmtEur(r.margin_eur) + ' · ' + fmtPct(r.margin_pct) : 'Inatteignable'"></span></td>
+                            <td class="num font-semibold" :class="marginStatusClass(typeof r.current_margin_pct === 'number' ? (r.current_margin_pct >= modalPricing.target_margin_pct ? 'good' : (r.current_margin_pct >= modalPricing.target_margin_pct - 10 ? 'close' : 'bad')) : 'unknown')" x-text="typeof r.current_margin_pct === 'number' ? fmtPct(r.current_margin_pct) : '—'"></td>
+                          </tr>
+                        </template>
+                      </tbody>
+                    </table>
+                    </div>
+                    <div class="flex items-center justify-between flex-wrap gap-3 p-4 rounded-xl border border-gray-100 bg-gray-50">
+                      <div>
+                        <p class="text-sm font-semibold text-ink-900">Prix unique conseillé : <span class="num" x-text="fmtEur(modalPricing.suggested_single_price_eur)"></span> <span class="text-xs font-normal text-gray-500">(actuel : <span class="num" x-text="fmtEur(selectedProduct.priceMin)"></span>)</span></p>
+                        <p class="text-[11px] text-gray-400" x-text="modalPricing.worst_case ? 'Pire cas : ' + modalPricing.worst_case.flag + ' ' + modalPricing.worst_case.country_name + ' — ' + modalPricing.worst_case.reason : 'La marge cible tient dans tous les pays à ce prix.'"></p>
+                        <p x-show="modalPricingApply.error" class="text-xs text-rose-500 mt-1" x-text="modalPricingApply.error"></p>
+                        <p x-show="modalPricingApply.done" class="text-xs text-accent-dark mt-1" x-text="modalPricingApply.done ? 'Prix mis à jour sur Etsy (' + (modalPricingApply.done.method === 'inventory' ? modalPricingApply.done.offerings_updated + ' variante(s)' : 'fiche simple') + ').' : ''"></p>
+                      </div>
+                      <button @click="applyPriceOnEtsy(selectedProduct.id, modalPricing.suggested_single_price_eur, modalPricingApply)" :disabled="modalPricingApply.applying || !etsyConnected || !modalPricing.suggested_single_price_eur"
+                              class="text-xs font-bold px-4 py-2 rounded-lg transition disabled:opacity-40 disabled:cursor-not-allowed"
+                              :class="modalPricingApply.confirming ? 'bg-rose-500 text-white hover:bg-rose-600' : 'bg-ink-900 text-white hover:bg-ink-700'">
+                        <i class="fa-solid mr-1.5" :class="modalPricingApply.applying ? 'fa-spinner fa-spin' : (modalPricingApply.confirming ? 'fa-triangle-exclamation' : 'fa-upload')"></i>
+                        <span x-text="modalPricingApply.applying ? 'Mise à jour…' : (modalPricingApply.confirming ? 'Confirmer la modification sur Etsy' : 'Appliquer ce prix sur Etsy')"></span>
+                      </button>
+                    </div>
+                  </div>
+                  </template>
+
+                  <!-- Estimation locale (fiche de démo, ou serveur indisponible) -->
+                  <template x-if="hasCostPrice() && !modalPricing && !modalPricingLoading">
                   <div class="overflow-x-auto">
                   <table class="w-full text-sm min-w-[760px]">
                     <thead><tr class="text-left text-xs text-gray-500 border-b border-gray-100">
@@ -1199,6 +1302,101 @@
                     </tbody>
                   </table>
                   </div>
+                  </template>
+                </div>
+
+                <!-- === PHASE 2 — SIMULER UN ACHAT (/api/product-test/simulate) === -->
+                <div class="border border-gray-100 rounded-xl p-4">
+                  <div class="flex items-center justify-between gap-2 flex-wrap mb-1">
+                    <h3 class="font-bold text-sm text-ink-900"><i class="fa-solid fa-flask text-accent mr-1.5"></i>Simuler un achat</h3>
+                    <span class="tag-pill bg-gray-100 text-gray-700 text-[10px]">Aucune commande réelle n'est passée</span>
+                  </div>
+                  <p class="text-xs text-gray-500 mb-3">Ce que paie l'acheteur dans un pays donné, ce qu'Etsy retient et ce qu'il te reste — avec le profil d'expédition Etsy réel de la fiche quand il est disponible.</p>
+
+                  <template x-if="!isRealListing(selectedProduct) || !loggedIn">
+                    <div class="border border-dashed border-gray-200 rounded-xl p-5 text-center">
+                      <i class="fa-solid fa-plug text-xl text-gray-300 mb-2 block"></i>
+                      <p class="text-xs text-gray-500">Disponible pour les fiches importées depuis ta boutique Etsy connectée.</p>
+                    </div>
+                  </template>
+
+                  <template x-if="isRealListing(selectedProduct) && loggedIn">
+                    <div class="space-y-3">
+                      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                        <div>
+                          <label class="block text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Pays</label>
+                          <select x-model="testForm.destination_country" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-accent bg-white">
+                            <template x-for="c in testCountryOptions" :key="'tc-'+c.code"><option :value="c.code" :selected="c.code === testForm.destination_country" x-text="c.flag + ' ' + c.name"></option></template>
+                          </select>
+                        </div>
+                        <div class="col-span-2">
+                          <label class="block text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Variante</label>
+                          <select x-model="testForm.variant_selected" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-accent bg-white">
+                            <option value="">Prix de base</option>
+                            <template x-for="(v, i) in selectedProduct.variants" :key="'tv-'+i"><option :value="variantLabel(v)" x-text="variantLabel(v) + ' — ' + fmtEur(variantPrice(v))"></option></template>
+                          </select>
+                        </div>
+                        <div>
+                          <label class="block text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Quantité</label>
+                          <input type="number" min="1" max="100" x-model="testForm.quantity" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-accent num">
+                        </div>
+                      </div>
+                      <div class="flex items-center justify-between flex-wrap gap-2">
+                        <p x-show="testError" class="text-xs text-rose-500" x-text="testError"></p>
+                        <button @click="runProductTest()" :disabled="testRunning" class="ml-auto bg-ink-900 hover:bg-ink-700 text-white text-xs font-bold px-4 py-2 rounded-lg disabled:opacity-40 transition">
+                          <i class="fa-solid mr-1.5" :class="testRunning ? 'fa-spinner fa-spin' : 'fa-play'"></i><span x-text="testRunning ? 'Simulation…' : 'Lancer la simulation'"></span>
+                        </button>
+                      </div>
+
+                      <template x-if="testResult">
+                        <div class="rounded-xl bg-gray-50 border border-gray-100 p-4 fade-enter">
+                          <div class="flex items-start justify-between gap-3 flex-wrap mb-3">
+                            <div>
+                              <p class="text-sm font-semibold text-ink-900" x-text="testResult.flag + ' ' + testResult.country_name + (testResult.variant_selected ? ' · ' + testResult.variant_selected : '') + (testResult.quantity > 1 ? ' · ×' + testResult.quantity : '')"></p>
+                              <p class="text-[11px] text-gray-400"><span x-text="testResult.shipping_source === 'etsy_profile' ? 'Profil d\'expédition Etsy réel' : 'Livraison estimée (pas de profil Etsy)'"></span><span x-show="testResult.delivery_days_min != null" x-text="' · ' + testResult.delivery_days_min + '-' + testResult.delivery_days_max + ' j'"></span></p>
+                            </div>
+                            <span class="tag-pill" :class="marginStatusPill(testResult.status)" x-text="marginStatusLabel(testResult.status)"></span>
+                          </div>
+                          <div class="grid grid-cols-3 gap-3 mb-3">
+                            <div><p class="text-[11px] font-bold uppercase tracking-widest text-gray-400">Acheteur paie</p><p class="text-lg font-extrabold text-ink-900 num" x-text="fmtEur(testResult.buyer_total_eur)"></p><p x-show="testResult.currency !== 'EUR'" class="text-[11px] text-gray-400" x-text="'≈ ' + fmtLocal(testResult.buyer_total_local, testResult.currency)"></p></div>
+                            <div><p class="text-[11px] font-bold uppercase tracking-widest text-gray-400">Net vendeur</p><p class="text-lg font-extrabold text-ink-900 num" x-text="fmtEur(testResult.seller_net_eur)"></p></div>
+                            <div><p class="text-[11px] font-bold uppercase tracking-widest text-gray-400">Marge</p><p class="text-lg font-extrabold num" :class="marginStatusClass(testResult.status)" x-text="typeof testResult.margin_pct === 'number' ? fmtEur(testResult.margin_eur) + ' · ' + fmtPct(testResult.margin_pct) : '—'"></p></div>
+                          </div>
+                          <div class="divide-y divide-gray-50 text-xs">
+                            <template x-for="(ln, i) in testResult.lines" :key="'tl-'+i">
+                              <div class="flex items-center justify-between py-1.5 gap-3">
+                                <span class="text-gray-600"><span x-text="ln.label"></span><span x-show="ln.note" class="text-gray-400" x-text="' — ' + ln.note"></span></span>
+                                <span class="num whitespace-nowrap" :class="testLineClass(ln.kind)" x-text="(ln.kind === 'fee' || ln.kind === 'cost' ? '− ' : '') + fmtEur(Math.abs(ln.amount_eur))"></span>
+                              </div>
+                            </template>
+                          </div>
+                          <ul x-show="testResult.warnings.length" class="mt-3 space-y-1">
+                            <template x-for="w in testResult.warnings" :key="w"><li class="text-[11px] text-amber-700 flex gap-1.5"><i class="fa-solid fa-triangle-exclamation mt-0.5"></i><span x-text="w"></span></li></template>
+                          </ul>
+                        </div>
+                      </template>
+
+                      <div x-show="testHistory.length">
+                        <button @click="testHistoryOpen = !testHistoryOpen" class="text-[11px] font-semibold text-gray-500 hover:text-ink-900 transition"><i class="fa-solid mr-1" :class="testHistoryOpen ? 'fa-chevron-up' : 'fa-chevron-down'"></i><span x-text="testHistory.length + ' simulation(s) précédente(s)'"></span></button>
+                        <div x-show="testHistoryOpen" x-cloak class="mt-2 overflow-x-auto">
+                          <table class="w-full text-xs">
+                            <thead><tr class="text-left text-gray-500 border-b border-gray-100"><th class="pb-1.5 font-semibold">Date</th><th class="pb-1.5 font-semibold">Pays</th><th class="pb-1.5 font-semibold">Variante</th><th class="pb-1.5 font-semibold">Acheteur</th><th class="pb-1.5 font-semibold">Net</th><th class="pb-1.5 font-semibold">Marge</th></tr></thead>
+                            <tbody class="divide-y divide-gray-50">
+                              <template x-for="(h, i) in testHistory.slice(0, 10)" :key="'th-'+(h.id || i)">
+                                <tr class="hover:bg-gray-50 transition">
+                                  <td class="py-1.5 text-gray-500" x-text="fmtDate(h.created_at)"></td>
+                                  <td x-text="h.flag + ' ' + h.destination_country"></td>
+                                  <td class="text-gray-500 truncate max-w-[160px]" x-text="h.variant_selected || 'Base'"></td>
+                                  <td class="num" x-text="fmtEur(h.buyer_total_eur)"></td>
+                                  <td class="num" x-text="fmtEur(h.seller_net_eur)"></td>
+                                  <td class="num font-semibold" :class="marginStatusClass(h.status)" x-text="typeof h.margin_pct === 'number' ? fmtPct(h.margin_pct) : '—'"></td>
+                                </tr>
+                              </template>
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </div>
                   </template>
                 </div>
 
@@ -1224,24 +1422,47 @@
 
                 <!-- Générer fiche -->
                 <div class="border-t border-gray-100 pt-5">
-                  <button @click="generatedListingVisible = !generatedListingVisible" class="bg-accent hover:bg-accent-dark text-ink-900 font-bold text-sm px-4 py-2 rounded-lg transition"><i class="fa-solid fa-wand-magic-sparkles mr-1.5"></i>Générer fiche Etsy</button>
+                  <div class="flex items-center gap-3 flex-wrap">
+                    <!-- PHASE 2 : fiche réelle → /api/seo/optimize (IA Claude, repli heuristique), toujours en anglais -->
+                    <button @click="generateListing()" :disabled="modalOptimizing" class="bg-accent hover:bg-accent-dark text-ink-900 font-bold text-sm px-4 py-2 rounded-lg disabled:opacity-40 transition"><i class="fa-solid mr-1.5" :class="modalOptimizing ? 'fa-spinner fa-spin' : 'fa-wand-magic-sparkles'"></i><span x-text="modalOptimizing ? 'Génération en cours…' : 'Générer fiche Etsy'"></span></button>
+                    <span x-show="modalOptimized" class="tag-pill" :class="modalOptimized && modalOptimized.engine === 'claude' ? 'bg-purple-50 text-purple-600' : 'bg-gray-100 text-gray-700'" x-text="modalOptimized && modalOptimized.engine === 'claude' ? 'IA Claude · anglais' : 'Règles locales · anglais'"></span>
+                    <button x-show="modalOptimized" @click="modalOptimized = null; generateListing()" class="text-xs font-semibold text-gray-600 hover:text-ink-900 transition"><i class="fa-solid fa-rotate mr-1"></i>Régénérer</button>
+                  </div>
+                  <p x-show="modalOptimizeError" class="text-xs text-rose-500 mt-2" x-text="modalOptimizeError"></p>
                   <div x-show="generatedListingVisible" x-cloak class="mt-4 space-y-3">
                     <div>
-                      <p class="text-xs font-bold text-gray-500 mb-1">Titre (140 car.)</p>
-                      <p class="text-sm bg-gray-50 border border-gray-100 rounded-lg p-2.5" x-text="generatedTitle(selectedProduct)"></p>
+                      <p class="text-xs font-bold text-gray-500 mb-1">Titre <span class="num" x-text="'(' + (modalOptimized ? modalOptimized.title.length : generatedTitle(selectedProduct).length) + '/140)'"></span></p>
+                      <p class="text-sm bg-gray-50 border border-gray-100 rounded-lg p-2.5" x-text="modalOptimized ? modalOptimized.title : generatedTitle(selectedProduct)"></p>
                     </div>
                     <div>
-                      <p class="text-xs font-bold text-gray-500 mb-1">Description (2000 car.)</p>
-                      <p class="text-sm bg-gray-50 border border-gray-100 rounded-lg p-2.5 leading-relaxed" x-text="generatedDescription(selectedProduct)"></p>
+                      <p class="text-xs font-bold text-gray-500 mb-1">Description</p>
+                      <p class="text-sm bg-gray-50 border border-gray-100 rounded-lg p-2.5 leading-relaxed whitespace-pre-line" x-text="modalOptimized ? modalOptimized.description : generatedDescription(selectedProduct)"></p>
                     </div>
                     <div>
-                      <p class="text-xs font-bold text-gray-500 mb-1">13 tags</p>
+                      <p class="text-xs font-bold text-gray-500 mb-1"><span class="num" x-text="generatedTags(selectedProduct).length"></span> tags</p>
                       <div class="flex flex-wrap gap-1.5">
-                        <template x-for="t in selectedProduct.tags" :key="'gen-'+t">
+                        <template x-for="t in generatedTags(selectedProduct)" :key="'gen-'+t">
                           <span class="tag-pill bg-gray-100 text-gray-700" x-text="t"></span>
                         </template>
                       </div>
                     </div>
+                    <ul x-show="modalOptimized && modalOptimized.notes.length" class="space-y-0.5"><template x-for="n in (modalOptimized ? modalOptimized.notes : [])" :key="'on-'+n"><li class="text-[11px] text-gray-400 flex gap-1.5"><i class="fa-solid fa-circle text-[4px] mt-1.5"></i><span x-text="n"></span></li></template></ul>
+                    <template x-if="modalOptimized && isRealListing(selectedProduct)">
+                      <div class="flex items-center justify-between flex-wrap gap-3 p-4 rounded-xl border border-gray-100 bg-gray-50">
+                        <div>
+                          <p class="text-sm font-semibold text-ink-900">Publier cette fiche sur Etsy</p>
+                          <p class="text-[11px] text-gray-400">Remplace le titre, la description et les tags actuels de la fiche. Visible immédiatement par les acheteurs.</p>
+                          <p x-show="modalSeoApply.error" class="text-xs text-rose-500 mt-1" x-text="modalSeoApply.error"></p>
+                          <p x-show="modalSeoApply.done" class="text-xs text-accent-dark mt-1" x-text="modalSeoApply.done ? 'Fiche mise à jour : ' + modalSeoApply.done.updated_fields.join(', ') + '.' : ''"></p>
+                        </div>
+                        <button @click="applySeoOnEtsy(selectedProduct.id, modalOptimized, modalSeoApply, () => refreshModalSeo())" :disabled="modalSeoApply.applying || !etsyConnected"
+                                class="text-xs font-bold px-4 py-2 rounded-lg transition disabled:opacity-40 disabled:cursor-not-allowed"
+                                :class="modalSeoApply.confirming ? 'bg-rose-500 text-white hover:bg-rose-600' : 'bg-ink-900 text-white hover:bg-ink-700'">
+                          <i class="fa-solid mr-1.5" :class="modalSeoApply.applying ? 'fa-spinner fa-spin' : (modalSeoApply.confirming ? 'fa-triangle-exclamation' : 'fa-upload')"></i>
+                          <span x-text="modalSeoApply.applying ? 'Mise à jour…' : (modalSeoApply.confirming ? 'Confirmer la publication sur Etsy' : 'Appliquer sur Etsy')"></span>
+                        </button>
+                      </div>
+                    </template>
                   </div>
                 </div>
               </div>
@@ -1254,10 +1475,84 @@
       <template x-if="page==='sourcing'"><div class="fade-enter space-y-6 max-w-7xl mx-auto">
 
         <div class="grid grid-cols-4 gap-4">
-          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Sources connectées</p><p class="text-2xl font-extrabold">7 / 7</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +1 vs mois dernier</p></div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1" x-text="loggedIn ? 'Mes fournisseurs' : 'Sources connectées'"></p><p class="text-2xl font-extrabold num" x-text="loggedIn ? suppliers.length : '7 / 7'"></p><p class="text-xs font-semibold mt-1" :class="loggedIn ? 'text-gray-400' : 'text-accent-dark'"><i class="fa-solid" :class="loggedIn ? 'fa-truck-ramp-box' : 'fa-arrow-up'"></i> <span x-text="loggedIn ? (suppliers.filter(s => s.has_api_key).length + ' avec clé API') : '+1 vs mois dernier'"></span></p></div>
           <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Produits comparés</p><p class="text-2xl font-extrabold">1 284</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +142 vs mois dernier</p></div>
           <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Marge moyenne</p><p class="text-2xl font-extrabold text-accent-dark">40,2%</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +0,8 pt vs mois dernier</p></div>
           <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Alertes stock</p><p class="text-2xl font-extrabold text-rose-500">3</p><p class="text-xs text-rose-500 font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +1 vs mois dernier</p></div>
+        </div>
+
+        <!-- === PHASE 2 — MES FOURNISSEURS (table suppliers, /api/suppliers) === -->
+        <div class="bg-white rounded-xl border border-gray-200 shadow-card">
+          <div class="flex items-center justify-between p-5 pb-0 flex-wrap gap-3">
+            <div>
+              <h3 class="font-bold text-sm text-ink-900">Mes fournisseurs</h3>
+              <p class="text-xs text-gray-500 mt-0.5">Tes fournisseurs réels (Eprolo, CJ, AliExpress…), leur catalogue et tes échanges. Les clés API restent côté serveur.</p>
+            </div>
+            <div class="flex gap-2 items-center flex-wrap">
+              <span x-show="openConversationsCount()" class="tag-pill bg-amber-100 text-amber-700"><i class="fa-regular fa-envelope"></i> <span x-text="openConversationsCount()"></span> message(s) ouvert(s)</span>
+              <button @click="loadSuppliers()" :disabled="suppliersLoading || !loggedIn" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition"><i class="fa-solid fa-rotate mr-1" :class="suppliersLoading && 'fa-spin'"></i>Actualiser</button>
+              <button @click="openSupplierModal(null)" :disabled="!loggedIn" class="text-xs font-bold px-3 py-1.5 rounded-lg bg-accent text-ink-900 hover:bg-accent-dark disabled:opacity-40 disabled:cursor-not-allowed transition"><i class="fa-solid fa-plus mr-1"></i>Ajouter un fournisseur</button>
+            </div>
+          </div>
+          <div class="p-5">
+            <p x-show="suppliersError" class="text-xs text-rose-500 mb-3" x-text="suppliersError"></p>
+
+            <!-- Non connecté -->
+            <div x-show="!loggedIn" class="border border-dashed border-gray-200 rounded-xl p-8 text-center">
+              <i class="fa-solid fa-lock text-2xl text-gray-300 mb-2 block"></i>
+              <p class="text-sm font-semibold text-ink-900 mb-1">Connecte-toi pour gérer tes fournisseurs</p>
+              <p class="text-xs text-gray-500">Tes fournisseurs, leurs produits et vos échanges sont enregistrés sur ton compte EtsyDrop.</p>
+            </div>
+
+            <!-- Chargement -->
+            <div x-show="loggedIn && suppliersLoading && !suppliers.length" class="space-y-2">
+              <div class="skeleton h-10 rounded-lg"></div><div class="skeleton h-10 rounded-lg"></div><div class="skeleton h-10 rounded-lg"></div>
+            </div>
+
+            <!-- État vide -->
+            <div x-show="loggedIn && !suppliersLoading && !suppliers.length" class="border border-dashed border-gray-200 rounded-xl p-8 text-center">
+              <i class="fa-solid fa-truck-ramp-box text-2xl text-gray-300 mb-2 block"></i>
+              <p class="text-sm font-semibold text-ink-900 mb-1">Aucun fournisseur pour le moment</p>
+              <p class="text-xs text-gray-500 mb-4">Ajoute ton premier fournisseur pour suivre ses prix, lier ses produits à tes fiches Etsy et lui poser des questions.</p>
+              <button @click="openSupplierModal(null)" class="bg-ink-900 hover:bg-ink-700 text-white text-xs font-semibold px-4 py-2 rounded-lg transition"><i class="fa-solid fa-plus mr-1"></i>Ajouter un fournisseur</button>
+            </div>
+
+            <!-- Tableau -->
+            <div x-show="loggedIn && suppliers.length" class="overflow-x-auto">
+              <table class="w-full text-sm min-w-[800px]">
+                <thead><tr class="text-left text-xs text-gray-500 border-b border-gray-100">
+                  <th class="pb-2 font-semibold">Fournisseur</th>
+                  <th class="pb-2 font-semibold">Plateforme</th>
+                  <th class="pb-2 font-semibold">Produits</th>
+                  <th class="pb-2 font-semibold">API</th>
+                  <th class="pb-2 font-semibold">Contact</th>
+                  <th class="pb-2 font-semibold">Messages</th>
+                  <th class="pb-2 font-semibold text-right">Actions</th>
+                </tr></thead>
+                <tbody class="divide-y divide-gray-50">
+                  <template x-for="s in suppliers" :key="s.id">
+                    <tr class="hover:bg-gray-50 transition">
+                      <td class="py-3 font-medium text-ink-900"><button @click="openSupplierDetail(s, 'products')" class="text-left hover:text-accent transition" x-text="s.name"></button></td>
+                      <td><span class="tag-pill" :class="platformMeta(s.platform).pill" x-text="platformMeta(s.platform).label"></span></td>
+                      <td class="num" x-text="s.products_count"></td>
+                      <td><span class="tag-pill" :class="s.has_api_key ? 'bg-accent-light text-accent-dark' : 'bg-gray-100 text-gray-700'"><i class="fa-solid" :class="s.has_api_key ? 'fa-key' : 'fa-minus'"></i> <span x-text="s.has_api_key ? 'Clé enregistrée' : 'Aucune clé'"></span></span></td>
+                      <td class="text-gray-500 text-xs" x-text="s.contact_email || '—'"></td>
+                      <td><button @click="openSupplierDetail(s, 'messages')" class="text-xs font-semibold text-gray-600 hover:text-accent transition"><i class="fa-regular fa-comments mr-1"></i><span x-text="conversationsFor(s.id).length"></span></button></td>
+                      <td class="text-right whitespace-nowrap">
+                        <button @click="openSupplierDetail(s, 'products')" class="text-xs font-semibold px-2.5 py-1 rounded-lg border border-gray-200 hover:bg-gray-50 mr-1 transition" title="Produits & messages"><i class="fa-solid fa-boxes-stacked"></i></button>
+                        <button @click="openSupplierModal(s)" class="text-xs font-semibold px-2.5 py-1 rounded-lg border border-gray-200 hover:bg-gray-50 mr-1 transition" title="Modifier"><i class="fa-solid fa-pen"></i></button>
+                        <button @click="deleteSupplier(s)" class="text-xs font-semibold px-2.5 py-1 rounded-lg border transition"
+                                :class="supplierDeleteConfirm === s.id ? 'bg-rose-500 border-rose-500 text-white' : 'border-gray-200 hover:bg-rose-50 hover:text-rose-500'"
+                                :title="supplierDeleteConfirm === s.id ? 'Confirmer la suppression (produits et messages inclus)' : 'Supprimer'">
+                          <i class="fa-solid" :class="supplierDeleteConfirm === s.id ? 'fa-check' : 'fa-trash'"></i><span x-show="supplierDeleteConfirm === s.id" class="ml-1">Confirmer ?</span>
+                        </button>
+                      </td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
 
         <div class="bg-white rounded-xl border border-gray-200 shadow-card">
@@ -1332,6 +1627,219 @@
           </table>
           </div>
         </div>
+
+        <!-- === PHASE 2 — MODAL CRÉATION / ÉDITION FOURNISSEUR === -->
+        <template x-if="supplierModal">
+          <div @click="supplierModal = null" @keydown.escape.window="supplierModal = null" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+            <div @click.stop class="bg-white rounded-2xl w-full max-w-lg max-h-[92vh] overflow-y-auto scrollbar-thin fade-enter">
+              <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100 sticky top-0 bg-white z-10">
+                <h2 class="font-bold text-lg text-ink-900" x-text="supplierModal.mode === 'create' ? 'Nouveau fournisseur' : 'Modifier le fournisseur'"></h2>
+                <button @click="supplierModal = null" class="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-500"><i class="fa-solid fa-xmark"></i></button>
+              </div>
+              <div class="p-6 space-y-4">
+                <div>
+                  <label class="block text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Nom</label>
+                  <input type="text" x-model="supplierModal.form.name" maxlength="80" placeholder="ex. Eprolo — bijoux" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-accent">
+                </div>
+                <div>
+                  <label class="block text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Plateforme</label>
+                  <select x-model="supplierModal.form.platform" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-accent bg-white">
+                    <template x-for="pl in supplierPlatforms" :key="pl.value"><option :value="pl.value" :selected="pl.value === supplierModal.form.platform" x-text="pl.label"></option></template>
+                  </select>
+                </div>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label class="block text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Clé API <span class="normal-case tracking-normal font-medium">(optionnel)</span></label>
+                    <input type="password" x-model="supplierModal.form.api_key" autocomplete="off" :placeholder="supplierModal.hasApiKey ? '•••••••• déjà enregistrée' : 'Clé API fournisseur'" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-accent">
+                  </div>
+                  <div>
+                    <label class="block text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Secret API <span class="normal-case tracking-normal font-medium">(optionnel)</span></label>
+                    <input type="password" x-model="supplierModal.form.api_secret" autocomplete="off" placeholder="Secret / token" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-accent">
+                  </div>
+                </div>
+                <p class="text-[11px] text-gray-400 leading-relaxed"><i class="fa-solid fa-shield-halved mr-1"></i>Les clés sont stockées côté serveur et ne sont jamais renvoyées au navigateur. En édition, laisse vide pour conserver la clé actuelle. Eprolo : permet l'import automatique du catalogue.</p>
+                <div>
+                  <label class="block text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Email de contact</label>
+                  <input type="email" x-model="supplierModal.form.contact_email" maxlength="120" placeholder="support@fournisseur.com" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-accent">
+                </div>
+                <div>
+                  <label class="block text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Notes</label>
+                  <textarea x-model="supplierModal.form.notes" rows="3" maxlength="1000" placeholder="Conditions négociées, délais, MOQ…" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-accent resize-none"></textarea>
+                </div>
+                <p x-show="supplierModal.error" class="text-xs text-rose-500" x-text="supplierModal.error"></p>
+                <div class="flex justify-end gap-2 pt-2">
+                  <button @click="supplierModal = null" class="text-xs font-semibold px-4 py-2 rounded-lg border border-gray-200 hover:bg-gray-50 transition">Annuler</button>
+                  <button @click="saveSupplier()" :disabled="supplierModal.saving" class="text-xs font-bold px-4 py-2 rounded-lg bg-accent text-ink-900 hover:bg-accent-dark disabled:opacity-40 transition">
+                    <i class="fa-solid mr-1.5" :class="supplierModal.saving ? 'fa-spinner fa-spin' : 'fa-floppy-disk'"></i><span x-text="supplierModal.saving ? 'Enregistrement…' : 'Enregistrer'"></span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </template>
+
+        <!-- === PHASE 2 — FICHE FOURNISSEUR : CATALOGUE + MESSAGES === -->
+        <template x-if="supplierDetail">
+          <div @click="supplierDetail = null" @keydown.escape.window="supplierDetail = null" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+            <div @click.stop class="bg-white rounded-2xl w-full max-w-4xl max-h-[92vh] overflow-y-auto scrollbar-thin fade-enter">
+              <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100 sticky top-0 bg-white z-10 gap-3">
+                <div class="flex items-center gap-3 min-w-0">
+                  <h2 class="font-bold text-lg text-ink-900 truncate" x-text="supplierDetail.supplier.name"></h2>
+                  <span class="tag-pill flex-shrink-0" :class="platformMeta(supplierDetail.supplier.platform).pill" x-text="platformMeta(supplierDetail.supplier.platform).label"></span>
+                </div>
+                <div class="flex items-center gap-2 flex-shrink-0">
+                  <div class="flex bg-gray-100 rounded-lg p-0.5">
+                    <button @click="supplierDetail.tab = 'products'" class="text-xs font-semibold px-3 py-1.5 rounded-md transition" :class="supplierDetail.tab === 'products' ? 'bg-white shadow-card text-ink-900' : 'text-gray-600 hover:text-ink-900'"><i class="fa-solid fa-boxes-stacked mr-1"></i>Produits <span class="num" x-text="'(' + supplierDetail.products.length + ')'"></span></button>
+                    <button @click="supplierDetail.tab = 'messages'" class="text-xs font-semibold px-3 py-1.5 rounded-md transition" :class="supplierDetail.tab === 'messages' ? 'bg-white shadow-card text-ink-900' : 'text-gray-600 hover:text-ink-900'"><i class="fa-regular fa-comments mr-1"></i>Messages <span class="num" x-text="'(' + conversationsFor(supplierDetail.supplier.id).length + ')'"></span></button>
+                  </div>
+                  <button @click="supplierDetail = null" class="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-500"><i class="fa-solid fa-xmark"></i></button>
+                </div>
+              </div>
+
+              <div class="p-6 space-y-5">
+                <p x-show="supplierDetail.error" class="text-xs text-rose-500 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2" x-text="supplierDetail.error"></p>
+                <p x-show="supplierDetail.notice" class="text-xs text-accent-dark bg-accent-light rounded-lg px-3 py-2" x-text="supplierDetail.notice"></p>
+                <p x-show="supplierDetail.supplier.notes" class="text-xs text-gray-500 leading-relaxed" x-text="supplierDetail.supplier.notes"></p>
+
+                <!-- Onglet Produits -->
+                <div x-show="supplierDetail.tab === 'products'" class="space-y-4">
+                  <div class="flex items-center justify-between flex-wrap gap-2">
+                    <p class="text-[11px] font-bold uppercase tracking-widest text-gray-400">Catalogue fournisseur</p>
+                    <div class="flex gap-2">
+                      <button @click="importSupplierProducts()" :disabled="supplierDetail.importing" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 disabled:opacity-40 transition" title="Import via l'API du fournisseur (Eprolo avec clé API)">
+                        <i class="fa-solid mr-1" :class="supplierDetail.importing ? 'fa-spinner fa-spin' : 'fa-cloud-arrow-down'"></i>Importer via API
+                      </button>
+                      <button @click="supplierDetail.showProductForm = !supplierDetail.showProductForm" class="text-xs font-bold px-3 py-1.5 rounded-lg bg-ink-900 text-white hover:bg-ink-700 transition"><i class="fa-solid mr-1" :class="supplierDetail.showProductForm ? 'fa-minus' : 'fa-plus'"></i>Ajouter à la main</button>
+                    </div>
+                  </div>
+
+                  <!-- Formulaire d'ajout -->
+                  <div x-show="supplierDetail.showProductForm" x-cloak class="p-4 rounded-xl bg-gray-50 border border-gray-100 grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div class="col-span-2">
+                      <label class="block text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Nom du produit</label>
+                      <input type="text" x-model="supplierDetail.productForm.name" maxlength="200" placeholder="Gold plated name necklace" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-accent bg-white">
+                    </div>
+                    <div>
+                      <label class="block text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Prix</label>
+                      <div class="flex gap-1">
+                        <input type="number" min="0" step="0.01" x-model="supplierDetail.productForm.base_price" placeholder="4,20" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-accent bg-white num">
+                        <select x-model="supplierDetail.productForm.currency" class="border border-gray-200 rounded-lg px-2 py-2 text-sm outline-none focus:border-accent bg-white"><option>EUR</option><option>USD</option><option>CNY</option></select>
+                      </div>
+                    </div>
+                    <div>
+                      <label class="block text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Délai (jours)</label>
+                      <input type="number" min="0" max="365" x-model="supplierDetail.productForm.lead_time_days" placeholder="10" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-accent bg-white num">
+                    </div>
+                    <div>
+                      <label class="block text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">MOQ</label>
+                      <input type="number" min="1" x-model="supplierDetail.productForm.moq" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-accent bg-white num">
+                    </div>
+                    <div>
+                      <label class="block text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Poids (g)</label>
+                      <input type="number" min="0" x-model="supplierDetail.productForm.weight_grams" placeholder="25" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-accent bg-white num">
+                    </div>
+                    <div class="col-span-2">
+                      <label class="block text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Fiche Etsy liée <span class="normal-case tracking-normal font-medium">(optionnel)</span></label>
+                      <select x-model="supplierDetail.productForm.linked_etsy_listing_id" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-accent bg-white">
+                        <option value="">— Aucune —</option>
+                        <template x-for="l in realListings().filter(l => l.etsyListingId)" :key="'pf-'+l.id"><option :value="l.etsyListingId" x-text="l.name"></option></template>
+                      </select>
+                    </div>
+                    <div class="col-span-2 sm:col-span-4 flex justify-end gap-2">
+                      <button @click="supplierDetail.showProductForm = false" class="text-xs font-semibold px-4 py-2 rounded-lg border border-gray-200 hover:bg-gray-50 transition">Annuler</button>
+                      <button @click="addSupplierProduct()" :disabled="supplierDetail.productSaving" class="text-xs font-bold px-4 py-2 rounded-lg bg-accent text-ink-900 hover:bg-accent-dark disabled:opacity-40 transition"><i class="fa-solid mr-1.5" :class="supplierDetail.productSaving ? 'fa-spinner fa-spin' : 'fa-plus'"></i>Ajouter le produit</button>
+                    </div>
+                  </div>
+
+                  <!-- Chargement / vide / tableau -->
+                  <div x-show="supplierDetail.loading" class="space-y-2"><div class="skeleton h-9 rounded-lg"></div><div class="skeleton h-9 rounded-lg"></div></div>
+                  <div x-show="!supplierDetail.loading && !supplierDetail.products.length" class="border border-dashed border-gray-200 rounded-xl p-8 text-center">
+                    <i class="fa-solid fa-box-open text-2xl text-gray-300 mb-2 block"></i>
+                    <p class="text-sm font-semibold text-ink-900 mb-1">Aucun produit chez ce fournisseur</p>
+                    <p class="text-xs text-gray-500">Importe le catalogue via l'API (Eprolo) ou ajoute un produit à la main pour suivre ses prix et le lier à une fiche Etsy.</p>
+                  </div>
+                  <div x-show="!supplierDetail.loading && supplierDetail.products.length" class="overflow-x-auto">
+                    <table class="w-full text-sm min-w-[700px]">
+                      <thead><tr class="text-left text-xs text-gray-500 border-b border-gray-100">
+                        <th class="pb-2 font-semibold">Produit</th><th class="pb-2 font-semibold">Prix</th><th class="pb-2 font-semibold">MOQ</th><th class="pb-2 font-semibold">Délai</th><th class="pb-2 font-semibold">Fiche Etsy liée</th><th class="pb-2"></th>
+                      </tr></thead>
+                      <tbody class="divide-y divide-gray-50">
+                        <template x-for="sp in supplierDetail.products" :key="sp.id">
+                          <tr class="hover:bg-gray-50 transition">
+                            <td class="py-2.5">
+                              <div class="flex items-center gap-2">
+                                <img x-show="sp.images && sp.images.length" :src="sp.images && sp.images[0]" class="w-8 h-8 rounded-lg object-cover bg-gray-100" alt="">
+                                <div class="min-w-0"><p class="font-medium text-ink-900 truncate max-w-[260px]" x-text="sp.name"></p><p x-show="sp.supplier_product_id" class="text-[11px] text-gray-400" x-text="'Réf. ' + sp.supplier_product_id"></p></div>
+                              </div>
+                            </td>
+                            <td class="font-semibold num" x-text="fmtLocal(sp.base_price, sp.currency)"></td>
+                            <td class="num" x-text="sp.moq"></td>
+                            <td x-text="sp.lead_time_days != null ? sp.lead_time_days + ' j' : '—'"></td>
+                            <td>
+                              <select :value="sp.linked_etsy_listing_id || ''" @change="linkSupplierProduct(sp, $event.target.value)" class="border border-gray-200 rounded-lg px-2 py-1 text-xs outline-none focus:border-accent bg-white max-w-[220px]">
+                                <option value="">— Non liée —</option>
+                                <template x-for="l in realListings().filter(l => l.etsyListingId)" :key="'lk-'+sp.id+'-'+l.id"><option :value="l.etsyListingId" :selected="String(l.etsyListingId) === String(sp.linked_etsy_listing_id || '')" x-text="l.name"></option></template>
+                              </select>
+                            </td>
+                            <td class="text-right"><button @click="removeSupplierProduct(sp)" class="text-xs px-2.5 py-1 rounded-lg border border-gray-200 hover:bg-rose-50 hover:text-rose-500 transition" title="Supprimer"><i class="fa-solid fa-trash"></i></button></td>
+                          </tr>
+                        </template>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <!-- Onglet Messages -->
+                <div x-show="supplierDetail.tab === 'messages'" x-cloak class="space-y-4">
+                  <div class="p-4 rounded-xl bg-gray-50 border border-gray-100 space-y-3">
+                    <p class="text-[11px] font-bold uppercase tracking-widest text-gray-400">Poser une question / demander un devis</p>
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div class="sm:col-span-2">
+                        <input type="text" x-model="supplierDetail.msgForm.subject" maxlength="140" placeholder="Sujet — ex. Quote for 50 units, gold plated" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-accent bg-white">
+                      </div>
+                      <div>
+                        <select x-model="supplierDetail.msgForm.supplier_product_id" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-accent bg-white">
+                          <option value="">Produit concerné (optionnel)</option>
+                          <template x-for="sp in supplierDetail.products" :key="'msg-'+sp.id"><option :value="sp.id" x-text="sp.name"></option></template>
+                        </select>
+                      </div>
+                    </div>
+                    <textarea x-model="supplierDetail.msgForm.message" rows="4" maxlength="4000" placeholder="Hello, could you confirm the unit price and lead time for…" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-accent bg-white resize-none"></textarea>
+                    <div class="flex items-center justify-between flex-wrap gap-2">
+                      <p class="text-[11px] text-gray-400"><i class="fa-regular fa-envelope mr-1"></i><span x-text="supplierDetail.supplier.contact_email ? 'Envoyé par email à ' + supplierDetail.supplier.contact_email + ' si le SMTP est configuré, sinon archivé ici.' : 'Aucun email de contact : le message sera archivé ici sans envoi.'"></span></p>
+                      <button @click="sendSupplierMessage()" :disabled="supplierDetail.msgSending" class="text-xs font-bold px-4 py-2 rounded-lg bg-accent text-ink-900 hover:bg-accent-dark disabled:opacity-40 transition"><i class="fa-solid mr-1.5" :class="supplierDetail.msgSending ? 'fa-spinner fa-spin' : 'fa-paper-plane'"></i>Envoyer</button>
+                    </div>
+                  </div>
+
+                  <div x-show="!conversationsFor(supplierDetail.supplier.id).length" class="border border-dashed border-gray-200 rounded-xl p-8 text-center">
+                    <i class="fa-regular fa-comments text-2xl text-gray-300 mb-2 block"></i>
+                    <p class="text-sm font-semibold text-ink-900 mb-1">Aucun échange pour le moment</p>
+                    <p class="text-xs text-gray-500">Tes questions et demandes de devis apparaîtront ici avec leur statut.</p>
+                  </div>
+                  <div class="space-y-2">
+                    <template x-for="c in conversationsFor(supplierDetail.supplier.id)" :key="c.id">
+                      <div class="border border-gray-100 rounded-xl p-4 hover:bg-gray-50 transition">
+                        <div class="flex items-start justify-between gap-3 flex-wrap">
+                          <div class="min-w-0">
+                            <p class="text-sm font-semibold text-ink-900" x-text="c.subject"></p>
+                            <p class="text-[11px] text-gray-400 mt-0.5"><span x-text="fmtDate(c.created_at)"></span> · <span x-text="c.direction === 'sent' ? 'Envoyé' : 'Reçu'"></span> · <span x-text="c.email_sent ? 'email parti' : 'archivé sans email'"></span></p>
+                          </div>
+                          <div class="flex items-center gap-1.5 flex-shrink-0">
+                            <span class="tag-pill" :class="conversationStatusMeta(c.status).pill" x-text="conversationStatusMeta(c.status).label"></span>
+                            <button x-show="c.status !== 'answered'" @click="setConversationStatus(c, 'answered')" class="text-[11px] font-semibold px-2 py-1 rounded-lg border border-gray-200 hover:bg-gray-50 transition" title="Marquer comme répondu">Répondu</button>
+                            <button x-show="c.status !== 'closed'" @click="setConversationStatus(c, 'closed')" class="text-[11px] font-semibold px-2 py-1 rounded-lg border border-gray-200 hover:bg-gray-50 transition" title="Clore">Clore</button>
+                            <button x-show="c.status === 'closed'" @click="setConversationStatus(c, 'open')" class="text-[11px] font-semibold px-2 py-1 rounded-lg border border-gray-200 hover:bg-gray-50 transition" title="Réouvrir">Réouvrir</button>
+                          </div>
+                        </div>
+                        <p class="text-xs text-gray-600 mt-2 leading-relaxed whitespace-pre-line" x-text="c.message"></p>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </template>
       </div></template>
 
       <!-- ================= ORDERS ================= -->
@@ -1399,10 +1907,49 @@
         <div class="grid grid-cols-3 gap-4">
           <div class="col-span-2 bg-white rounded-xl border border-gray-200 shadow-card p-5">
             <h3 class="font-bold text-sm text-ink-900 mb-3">Recherche de mots-clés</h3>
-            <div class="flex gap-2 mb-4">
-              <input type="text" value="collier prénom personnalisé" class="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-accent">
-              <button class="bg-accent text-ink-900 font-bold text-sm px-4 py-2 rounded-lg hover:bg-accent-dark">Analyser</button>
+            <div class="flex gap-2 mb-2">
+              <input type="text" x-model="seoQuery" @keydown.enter="runSeoTrending()" maxlength="80" placeholder="personalized name necklace" class="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-accent">
+              <button @click="runSeoTrending()" :disabled="seoTrendingLoading" class="bg-accent text-ink-900 font-bold text-sm px-4 py-2 rounded-lg hover:bg-accent-dark disabled:opacity-40 transition"><i class="fa-solid mr-1.5" :class="seoTrendingLoading ? 'fa-spinner fa-spin' : 'fa-magnifying-glass'"></i>Analyser</button>
             </div>
+            <p class="text-[11px] text-gray-400 mb-4">Requête en anglais (marché US/UK). Sources : catégories Etsy, tags de tes fiches, tags des fiches actives Etsy pour cette recherche.</p>
+            <p x-show="seoTrendingError" class="text-xs text-rose-500 mb-3" x-text="seoTrendingError"></p>
+
+            <!-- === PHASE 2 — Résultats réels (SeoTrendingResponse) === -->
+            <div x-show="seoTrendingLoading" class="space-y-2"><div class="skeleton h-8 rounded-lg"></div><div class="skeleton h-8 rounded-lg"></div><div class="skeleton h-8 rounded-lg"></div></div>
+            <template x-if="seoTrending && !seoTrendingLoading">
+              <div class="fade-enter">
+                <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
+                  <p class="text-xs text-gray-500">Résultats pour <span class="font-semibold text-ink-900" x-text="'« ' + seoTrending.query + ' »'"></span> · <span class="num" x-text="seoTrending.keywords.length"></span> mot(s)-clé(s)</p>
+                  <button @click="seoTrending = null" class="text-[11px] font-semibold text-gray-500 hover:text-ink-900 transition"><i class="fa-solid fa-xmark mr-1"></i>Effacer</button>
+                </div>
+                <div x-show="!seoTrending.keywords.length" class="border border-dashed border-gray-200 rounded-xl p-8 text-center">
+                  <i class="fa-solid fa-tags text-2xl text-gray-300 mb-2 block"></i>
+                  <p class="text-sm font-semibold text-ink-900 mb-1">Aucun mot-clé trouvé</p>
+                  <p class="text-xs text-gray-500">Essaie une requête plus large en anglais (ex. « name necklace », « gift for her »).</p>
+                </div>
+                <table x-show="seoTrending.keywords.length" class="w-full text-sm">
+                  <thead><tr class="text-left text-xs text-gray-500 border-b border-gray-100">
+                    <th class="pb-2 font-semibold">Mot-clé</th><th class="pb-2 font-semibold">Source</th><th class="pb-2 font-semibold text-right">Fréquence</th>
+                  </tr></thead>
+                  <tbody class="divide-y divide-gray-50">
+                    <template x-for="k in seoTrending.keywords" :key="k.source + '-' + k.keyword">
+                      <tr class="hover:bg-gray-50 transition">
+                        <td class="py-2.5 font-medium" x-text="k.keyword"></td>
+                        <td><span class="tag-pill" :class="seoSourceMeta(k.source).pill" x-text="seoSourceMeta(k.source).label"></span></td>
+                        <td class="text-right num font-semibold" x-text="k.count || '—'"></td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+                <div x-show="seoTrending.taxonomy_paths.length" class="mt-4">
+                  <p class="text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Catégories Etsy correspondantes</p>
+                  <div class="flex flex-wrap gap-1.5"><template x-for="tp in seoTrending.taxonomy_paths" :key="tp"><span class="tag-pill bg-blue-50 text-blue-600" x-text="tp"></span></template></div>
+                </div>
+              </div>
+            </template>
+
+            <!-- Exemple de démo — masqué dès qu'une recherche réelle a été lancée -->
+            <div x-show="!seoTrending && !seoTrendingLoading">
             <table class="w-full text-sm">
               <thead><tr class="text-left text-xs text-gray-500 border-b border-gray-100">
                 <th class="pb-2 font-semibold">Mot-clé</th>
@@ -1427,36 +1974,98 @@
                 <tr><td class="py-2.5 font-medium">cadeau demoiselle d'honneur bijou</td><td>1 200/mois</td><td class="font-semibold">41 600</td><td><span class="tag-pill bg-accent-light text-accent-dark">Faible</span></td><td class="text-accent-dark font-semibold"><i class="fa-solid fa-arrow-trend-up"></i> +21%</td><td class="text-right"><span class="tag-pill bg-accent-light text-accent-dark">88/100</span></td></tr>
               </tbody>
             </table>
+            <p x-show="loggedIn" class="text-[11px] text-gray-400 mt-2"><i class="fa-solid fa-circle-info mr-1"></i>Exemple — lance une recherche pour voir les vrais mots-clés Etsy.</p>
+            </div>
           </div>
 
+          <!-- === PHASE 2 — LQS réel d'une fiche (/api/seo/analyze) + optimisation (/api/seo/optimize, /api/seo/apply) === -->
           <div class="bg-white rounded-xl border border-gray-200 shadow-card p-5">
-            <h3 class="font-bold text-sm text-ink-900">Listing Quality Score</h3>
-            <p class="text-xs text-gray-500 mb-3">Collier prénom plaqué or</p>
-
-            <div class="relative w-48 h-28 mx-auto mb-2">
-              <svg viewBox="0 0 200 110" class="w-full h-full">
-                <path class="lqs-bg" d="M20,100 A80,80 0 0,1 180,100" fill="none" stroke-width="14" stroke-linecap="round"></path>
-                <path d="M20,100 A80,80 0 0,1 180,100" fill="none" :stroke="lqsColor(lqsScore)" stroke-width="14" stroke-linecap="round"
-                      stroke-dasharray="251.33" :stroke-dashoffset="lqsArcOffset(lqsScore)" style="transition: stroke-dashoffset .6s ease, stroke .3s ease;"></path>
-              </svg>
-              <div class="absolute inset-0 flex flex-col items-center justify-end pb-1">
-                <span class="text-3xl font-extrabold text-ink-900 num" x-text="lqsScore"></span>
-                <span class="text-[11px] text-gray-400 font-semibold">/ 100</span>
-              </div>
+            <div class="flex items-center justify-between gap-2 mb-1">
+              <h3 class="font-bold text-sm text-ink-900">Listing Quality Score</h3>
+              <span x-show="seoAnalysis" class="tag-pill bg-accent-light text-accent-dark"><i class="fa-solid fa-server"></i> Réel</span>
+              <span x-show="!seoAnalysis" class="tag-pill bg-gray-100 text-gray-700">Exemple</span>
             </div>
+            <select x-show="realListings().length" x-model="seoListingId" @change="loadSeoAnalysis()" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-xs outline-none focus:border-accent bg-white mb-3">
+              <option value="">— Choisir une fiche Etsy à analyser —</option>
+              <template x-for="l in realListings()" :key="'seo-'+l.id"><option :value="l.id" x-text="l.name"></option></template>
+            </select>
+            <p x-show="!realListings().length" class="text-xs text-gray-500 mb-3" x-text="seoPageListingName()"></p>
+            <p x-show="seoAnalysisError" class="text-xs text-rose-500 mb-2" x-text="seoAnalysisError"></p>
 
-            <div class="space-y-4">
-              <template x-for="section in lqsChecks" :key="section.section">
-                <div>
-                  <p class="text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5" x-text="section.section"></p>
-                  <div class="space-y-1.5">
-                    <template x-for="(item, i) in section.items" :key="i">
-                      <div class="flex items-center gap-2 text-xs">
-                        <i class="fa-solid" :class="item.status==='ok' ? 'fa-circle-check text-accent-dark' : (item.status==='warning' ? 'fa-triangle-exclamation text-amber-500' : 'fa-circle-xmark text-rose-500')"></i>
-                        <span x-text="item.text"></span>
-                      </div>
-                    </template>
+            <div x-show="seoAnalysisLoading" class="space-y-2 mb-3"><div class="skeleton h-28 rounded-xl"></div><div class="skeleton h-6 rounded-lg"></div></div>
+
+            <div x-show="!seoAnalysisLoading">
+              <div class="relative w-48 h-28 mx-auto mb-2">
+                <svg viewBox="0 0 200 110" class="w-full h-full">
+                  <path class="lqs-bg" d="M20,100 A80,80 0 0,1 180,100" fill="none" stroke-width="14" stroke-linecap="round"></path>
+                  <path d="M20,100 A80,80 0 0,1 180,100" fill="none" :stroke="lqsColor(seoPageScore())" stroke-width="14" stroke-linecap="round"
+                        stroke-dasharray="251.33" :stroke-dashoffset="lqsArcOffset(seoPageScore())" style="transition: stroke-dashoffset .6s ease, stroke .3s ease;"></path>
+                </svg>
+                <div class="absolute inset-0 flex flex-col items-center justify-end pb-1">
+                  <span class="text-3xl font-extrabold text-ink-900 num" x-text="seoPageScore()"></span>
+                  <span class="text-[11px] text-gray-400 font-semibold">/ 100</span>
+                </div>
+              </div>
+
+              <div class="space-y-4">
+                <template x-for="section in seoPageChecks()" :key="section.section">
+                  <div>
+                    <p class="text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5"><span x-text="section.section"></span><span x-show="typeof section.score === 'number'" class="ml-1 num" x-text="'· ' + section.score + '/100'"></span></p>
+                    <div class="space-y-1.5">
+                      <template x-for="(item, i) in section.items" :key="i">
+                        <div class="flex items-center gap-2 text-xs">
+                          <i class="fa-solid" :class="item.status==='ok' ? 'fa-circle-check text-accent-dark' : (item.status==='warning' ? 'fa-triangle-exclamation text-amber-500' : 'fa-circle-xmark text-rose-500')"></i>
+                          <span x-text="item.text"></span>
+                        </div>
+                      </template>
+                    </div>
                   </div>
+                </template>
+              </div>
+
+              <!-- Suggestions + optimisation (fiche réelle uniquement) -->
+              <template x-if="seoAnalysis">
+                <div class="mt-4 pt-4 border-t border-gray-100 space-y-3 fade-enter">
+                  <div x-show="seoAnalysis.suggestions.length">
+                    <p class="text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Suggestions</p>
+                    <ul class="space-y-1">
+                      <template x-for="s in seoAnalysis.suggestions" :key="s"><li class="text-xs text-gray-600 flex gap-2"><i class="fa-solid fa-arrow-right text-accent text-[10px] mt-1"></i><span x-text="s"></span></li></template>
+                    </ul>
+                  </div>
+                  <button @click="runSeoOptimize()" :disabled="seoOptimizing" class="w-full bg-accent hover:bg-accent-dark text-ink-900 font-bold text-xs px-4 py-2.5 rounded-lg disabled:opacity-40 transition">
+                    <i class="fa-solid mr-1.5" :class="seoOptimizing ? 'fa-spinner fa-spin' : 'fa-wand-magic-sparkles'"></i><span x-text="seoOptimizing ? 'Optimisation en cours…' : (seoOptimized ? 'Régénérer une proposition' : 'Optimiser titre, tags et description')"></span>
+                  </button>
+                  <p x-show="seoOptimizeError" class="text-xs text-rose-500" x-text="seoOptimizeError"></p>
+
+                  <template x-if="seoOptimized">
+                    <div class="space-y-3 fade-enter">
+                      <div class="flex items-center justify-between">
+                        <p class="text-[11px] font-bold uppercase tracking-widest text-gray-400">Proposition (anglais)</p>
+                        <span class="tag-pill" :class="seoOptimized.engine === 'claude' ? 'bg-purple-50 text-purple-600' : 'bg-gray-100 text-gray-700'" x-text="seoOptimized.engine === 'claude' ? 'IA Claude' : 'Règles locales'"></span>
+                      </div>
+                      <div>
+                        <p class="text-[11px] font-semibold text-gray-500 mb-1">Titre <span class="num" x-text="'(' + seoOptimized.title.length + '/140)'"></span></p>
+                        <p class="text-xs bg-gray-50 border border-gray-100 rounded-lg p-2.5 leading-relaxed" x-text="seoOptimized.title"></p>
+                      </div>
+                      <div>
+                        <p class="text-[11px] font-semibold text-gray-500 mb-1"><span class="num" x-text="seoOptimized.tags.length"></span> tags</p>
+                        <div class="flex flex-wrap gap-1"><template x-for="t in seoOptimized.tags" :key="'so-'+t"><span class="tag-pill bg-gray-100 text-gray-700" x-text="t"></span></template></div>
+                      </div>
+                      <div>
+                        <p class="text-[11px] font-semibold text-gray-500 mb-1">Description</p>
+                        <p class="text-xs bg-gray-50 border border-gray-100 rounded-lg p-2.5 leading-relaxed whitespace-pre-line max-h-40 overflow-y-auto scrollbar-thin" x-text="seoOptimized.description"></p>
+                      </div>
+                      <ul x-show="seoOptimized.notes.length" class="space-y-0.5"><template x-for="n in seoOptimized.notes" :key="n"><li class="text-[11px] text-gray-400 flex gap-1.5"><i class="fa-solid fa-circle text-[4px] mt-1.5"></i><span x-text="n"></span></li></template></ul>
+                      <p x-show="seoApplyState.error" class="text-xs text-rose-500" x-text="seoApplyState.error"></p>
+                      <p x-show="seoApplyState.done" class="text-xs text-accent-dark" x-text="seoApplyState.done ? 'Fiche Etsy mise à jour : ' + seoApplyState.done.updated_fields.join(', ') + '.' : ''"></p>
+                      <button @click="applySeoOnEtsy(seoListingId, seoOptimized, seoApplyState, () => loadSeoAnalysis())" :disabled="seoApplyState.applying || !etsyConnected"
+                              class="w-full text-xs font-bold px-4 py-2.5 rounded-lg transition disabled:opacity-40 disabled:cursor-not-allowed"
+                              :class="seoApplyState.confirming ? 'bg-rose-500 text-white hover:bg-rose-600' : 'bg-ink-900 text-white hover:bg-ink-700'">
+                        <i class="fa-solid mr-1.5" :class="seoApplyState.applying ? 'fa-spinner fa-spin' : (seoApplyState.confirming ? 'fa-triangle-exclamation' : 'fa-upload')"></i>
+                        <span x-text="seoApplyState.applying ? 'Mise à jour…' : (seoApplyState.confirming ? 'Confirmer : remplacer titre, tags et description sur Etsy' : 'Appliquer sur Etsy')"></span>
+                      </button>
+                    </div>
+                  </template>
                 </div>
               </template>
             </div>
@@ -1842,6 +2451,214 @@
                 🎉 Excellente marge ! Tu es dans le top 10% des vendeurs EtsyDrop.
               </div>
             </div>
+          </div>
+        </div>
+
+        <!-- === PHASE 2 — ANALYSE DE PRIX PAR PAYS (moteur etsy_fees, /api/pricing/analyze) === -->
+        <div class="bg-white rounded-xl border border-gray-200 shadow-card p-5">
+          <div class="flex items-start justify-between flex-wrap gap-3 mb-4">
+            <div>
+              <h3 class="font-bold text-sm text-ink-900">Analyse de prix par pays</h3>
+              <p class="text-xs text-gray-500 mt-0.5">Prix recommandé pour tenir ta marge cible dans chaque pays après commission Etsy (6,5 % + frais fixes), change 1,8 %, TVA locale et livraison. Calcul serveur, identique à celui du modal Catalogue.</p>
+            </div>
+            <span class="tag-pill" :class="loggedIn ? 'bg-accent-light text-accent-dark' : 'bg-gray-100 text-gray-700'"><i class="fa-solid" :class="loggedIn ? 'fa-server' : 'fa-lock'"></i> <span x-text="loggedIn ? 'Moteur réel' : 'Connexion requise'"></span></span>
+          </div>
+
+          <div class="grid grid-cols-2 lg:grid-cols-6 gap-3 p-4 rounded-xl bg-gray-50 border border-gray-100">
+            <div class="col-span-2">
+              <label class="block text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Fiche Etsy <span class="normal-case tracking-normal font-medium">(optionnel)</span></label>
+              <select x-model="pricingForm.listing_id" @change="onPricingListingChange()" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-accent bg-white">
+                <option value="">— Simulation libre —</option>
+                <template x-for="l in realListings()" :key="'pa-'+l.id"><option :value="l.id" x-text="l.name"></option></template>
+              </select>
+            </div>
+            <div>
+              <label class="block text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Coût fournisseur</label>
+              <div class="flex items-center border border-gray-200 rounded-lg px-3 bg-white"><input type="number" min="0" step="0.01" x-model="pricingForm.cost_price" class="w-full py-2 outline-none text-sm bg-transparent num"><span class="text-gray-400 text-xs">€</span></div>
+            </div>
+            <div>
+              <label class="block text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Marge cible</label>
+              <div class="flex items-center border border-gray-200 rounded-lg px-3 bg-white"><input type="number" min="0" max="95" step="1" x-model="pricingForm.target_margin_pct" class="w-full py-2 outline-none text-sm bg-transparent num"><span class="text-gray-400 text-xs">%</span></div>
+            </div>
+            <div>
+              <label class="block text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Prix actuel <span class="normal-case tracking-normal font-medium">(opt.)</span></label>
+              <div class="flex items-center border border-gray-200 rounded-lg px-3 bg-white"><input type="number" min="0" step="0.01" x-model="pricingForm.current_price" placeholder="24,90" class="w-full py-2 outline-none text-sm bg-transparent num"><span class="text-gray-400 text-xs">€</span></div>
+            </div>
+            <div>
+              <label class="block text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Profil livraison</label>
+              <select x-model="pricingForm.shipping_profile_id" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-accent bg-white">
+                <option value="">Par défaut (6 pays)</option>
+                <template x-for="pr in shippingProfiles" :key="'pp-'+pr.id"><option :value="pr.id" x-text="pr.name"></option></template>
+              </select>
+            </div>
+            <div class="col-span-2 lg:col-span-4 flex items-center gap-5 flex-wrap">
+              <label class="flex items-center gap-2 text-xs font-semibold text-gray-600 cursor-pointer select-none"><input type="checkbox" x-model="pricingForm.free_shipping" class="accent-accent w-4 h-4">Livraison gratuite (port inclus dans le prix)</label>
+              <label class="flex items-center gap-2 text-xs font-semibold text-gray-600 cursor-pointer select-none"><input type="checkbox" x-model="pricingForm.vat_applicable" class="accent-accent w-4 h-4">TVA applicable <span class="font-normal text-gray-400">(décoche si franchise en base)</span></label>
+            </div>
+            <div class="col-span-2 flex items-end justify-end">
+              <button @click="runPricingAnalysis()" :disabled="pricingAnalyzing || !loggedIn" class="w-full lg:w-auto bg-accent hover:bg-accent-dark text-ink-900 font-bold text-sm px-5 py-2 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition">
+                <i class="fa-solid mr-1.5" :class="pricingAnalyzing ? 'fa-spinner fa-spin' : 'fa-calculator'"></i><span x-text="pricingAnalyzing ? 'Analyse…' : 'Analyser'"></span>
+              </button>
+            </div>
+          </div>
+          <p x-show="pricingAnalyzeError" class="text-xs text-rose-500 mt-3" x-text="pricingAnalyzeError"></p>
+
+          <!-- État vide -->
+          <div x-show="!pricingAnalysis && !pricingAnalyzing" class="border border-dashed border-gray-200 rounded-xl p-8 text-center mt-4">
+            <i class="fa-solid fa-earth-europe text-2xl text-gray-300 mb-2 block"></i>
+            <p class="text-sm font-semibold text-ink-900 mb-1" x-text="loggedIn ? 'Lance une analyse pour voir le prix recommandé par pays' : 'Connecte-toi pour utiliser le moteur de prix'"></p>
+            <p class="text-xs text-gray-500">Choisis une fiche pour pré-remplir coût, marge cible et prix actuel, ou saisis des valeurs libres.</p>
+          </div>
+          <div x-show="pricingAnalyzing" class="space-y-2 mt-4"><div class="skeleton h-9 rounded-lg"></div><div class="skeleton h-9 rounded-lg"></div><div class="skeleton h-9 rounded-lg"></div></div>
+
+          <!-- Résultats -->
+          <template x-if="pricingAnalysis && !pricingAnalyzing">
+            <div class="mt-4 space-y-4 fade-enter">
+              <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div class="rounded-xl border border-gray-100 p-4">
+                  <p class="text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1">Prix unique conseillé</p>
+                  <p class="text-2xl font-extrabold text-ink-900 num" x-text="fmtEur(pricingAnalysis.suggested_single_price_eur)"></p>
+                  <p class="text-[11px] text-gray-400 mt-1">Le plus élevé des prix recommandés : la marge tient dans tous les pays.</p>
+                </div>
+                <div class="rounded-xl border border-gray-100 p-4" x-show="pricingAnalysis.best_case">
+                  <p class="text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1">Meilleur pays</p>
+                  <p class="text-lg font-extrabold text-accent-dark" x-text="pricingAnalysis.best_case ? pricingAnalysis.best_case.flag + ' ' + pricingAnalysis.best_case.country_name : '—'"></p>
+                  <p class="text-[11px] text-gray-400 mt-1" x-text="pricingAnalysis.best_case ? pricingAnalysis.best_case.reason : ''"></p>
+                </div>
+                <div class="rounded-xl border border-gray-100 p-4" x-show="pricingAnalysis.worst_case">
+                  <p class="text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1">Pire cas</p>
+                  <p class="text-lg font-extrabold text-rose-500" x-text="pricingAnalysis.worst_case ? pricingAnalysis.worst_case.flag + ' ' + pricingAnalysis.worst_case.country_name : '—'"></p>
+                  <p class="text-[11px] text-gray-400 mt-1" x-text="pricingAnalysis.worst_case ? pricingAnalysis.worst_case.reason : ''"></p>
+                </div>
+              </div>
+
+              <div class="overflow-x-auto">
+                <table class="w-full text-sm min-w-[980px]">
+                  <thead><tr class="text-left text-xs text-gray-500 border-b border-gray-100">
+                    <th class="pb-2 font-semibold">Pays</th><th class="pb-2 font-semibold">Prix recommandé</th><th class="pb-2 font-semibold">Livraison</th><th class="pb-2 font-semibold">Frais Etsy</th><th class="pb-2 font-semibold">Change</th><th class="pb-2 font-semibold">TVA</th><th class="pb-2 font-semibold">Net vendeur</th><th class="pb-2 font-semibold">Marge</th><th class="pb-2 font-semibold">Au prix actuel</th><th class="pb-2 font-semibold">Délai</th>
+                  </tr></thead>
+                  <tbody class="divide-y divide-gray-50">
+                    <template x-for="r in pricingAnalysis.results" :key="r.country_code">
+                      <tr class="hover:bg-gray-50 transition">
+                        <td class="py-2.5 font-medium" x-text="r.flag + ' ' + r.country_name"></td>
+                        <td><span class="font-semibold num" x-text="fmtEur(r.recommended_price_eur)"></span><span x-show="r.currency !== 'EUR'" class="text-[11px] text-gray-400 ml-1" x-text="'≈ ' + fmtLocal(r.recommended_price_local, r.currency)"></span></td>
+                        <td x-text="r.shipping_charged_eur > 0 ? fmtEur(r.shipping_charged_eur) : 'Gratuite (' + fmtEur(r.shipping_cost_eur) + ' à ta charge)'"></td>
+                        <td class="num" x-text="fmtEur(r.etsy_fees_eur)"></td>
+                        <td class="num" x-text="fmtEur(r.currency_fee_eur)"></td>
+                        <td><span class="num" x-text="fmtEur(r.vat_eur)"></span><span class="block text-[10px] text-gray-400 leading-tight" x-text="r.vat_label"></span></td>
+                        <td class="font-semibold num" x-text="fmtEur(r.seller_net_eur)"></td>
+                        <td><span class="tag-pill" :class="marginStatusPill(r.reachable ? r.status : 'bad')" x-text="r.reachable ? fmtEur(r.margin_eur) + ' · ' + fmtPct(r.margin_pct) : 'Inatteignable'"></span></td>
+                        <td class="num" :class="marginStatusClass(typeof r.current_margin_pct === 'number' ? (r.current_margin_pct >= pricingAnalysis.target_margin_pct ? 'good' : (r.current_margin_pct >= pricingAnalysis.target_margin_pct - 10 ? 'close' : 'bad')) : 'unknown')" x-text="typeof r.current_margin_pct === 'number' ? fmtPct(r.current_margin_pct) : '—'"></td>
+                        <td class="text-gray-500" x-text="r.delivery_days_min != null ? r.delivery_days_min + '-' + r.delivery_days_max + ' j' : '—'"></td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+
+              <!-- Application sur Etsy (fiche réelle sélectionnée) -->
+              <div x-show="pricingAnalysis.listing_id && pricingAnalysis.suggested_single_price_eur" class="flex items-center justify-between flex-wrap gap-3 p-4 rounded-xl border border-gray-100 bg-gray-50">
+                <div>
+                  <p class="text-sm font-semibold text-ink-900">Appliquer <span class="num" x-text="fmtEur(pricingAnalysis.suggested_single_price_eur)"></span> sur la fiche Etsy</p>
+                  <p class="text-[11px] text-gray-400">Modifie le prix réel de la fiche (toutes les variantes au même prix). Visible immédiatement par les acheteurs.</p>
+                  <p x-show="pricingApplyState.error" class="text-xs text-rose-500 mt-1" x-text="pricingApplyState.error"></p>
+                  <p x-show="pricingApplyState.done" class="text-xs text-accent-dark mt-1" x-text="pricingApplyState.done ? 'Prix mis à jour sur Etsy (' + (pricingApplyState.done.method === 'inventory' ? pricingApplyState.done.offerings_updated + ' variante(s)' : 'fiche simple') + ').' : ''"></p>
+                </div>
+                <button @click="applyPriceOnEtsy(pricingAnalysis.listing_id, pricingAnalysis.suggested_single_price_eur, pricingApplyState)" :disabled="pricingApplyState.applying || !etsyConnected"
+                        class="text-xs font-bold px-4 py-2 rounded-lg transition disabled:opacity-40 disabled:cursor-not-allowed"
+                        :class="pricingApplyState.confirming ? 'bg-rose-500 text-white hover:bg-rose-600' : 'bg-ink-900 text-white hover:bg-ink-700'">
+                  <i class="fa-solid mr-1.5" :class="pricingApplyState.applying ? 'fa-spinner fa-spin' : (pricingApplyState.confirming ? 'fa-triangle-exclamation' : 'fa-upload')"></i>
+                  <span x-text="pricingApplyState.applying ? 'Mise à jour…' : (pricingApplyState.confirming ? 'Confirmer la modification sur Etsy' : 'Appliquer sur Etsy')"></span>
+                </button>
+              </div>
+            </div>
+          </template>
+        </div>
+
+        <!-- === PHASE 2 — PROFILS DE LIVRAISON (table shipping_profiles, /api/pricing/profiles) === -->
+        <div class="bg-white rounded-xl border border-gray-200 shadow-card p-5">
+          <div class="flex items-start justify-between flex-wrap gap-3 mb-4">
+            <div>
+              <h3 class="font-bold text-sm text-ink-900">Profils de livraison</h3>
+              <p class="text-xs text-gray-500 mt-0.5">Tes coûts de port réels par pays, réutilisables dans l'analyse de prix ci-dessus.</p>
+            </div>
+            <button @click="profileForm ? (profileForm = null) : newProfileForm()" :disabled="!loggedIn" class="text-xs font-bold px-3 py-1.5 rounded-lg bg-ink-900 text-white hover:bg-ink-700 disabled:opacity-40 disabled:cursor-not-allowed transition"><i class="fa-solid mr-1" :class="profileForm ? 'fa-minus' : 'fa-plus'"></i><span x-text="profileForm ? 'Annuler' : 'Nouveau profil'"></span></button>
+          </div>
+          <p x-show="shippingProfilesError" class="text-xs text-rose-500 mb-3" x-text="shippingProfilesError"></p>
+
+          <!-- Formulaire -->
+          <template x-if="profileForm">
+            <div class="p-4 rounded-xl bg-gray-50 border border-gray-100 space-y-3 mb-4 fade-enter">
+              <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div class="sm:col-span-2">
+                  <label class="block text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Nom du profil</label>
+                  <input type="text" x-model="profileForm.name" maxlength="80" placeholder="ex. Mondial Standard, Livraison gratuite Europe" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-accent bg-white">
+                </div>
+                <div>
+                  <label class="block text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Marge cible</label>
+                  <div class="flex items-center border border-gray-200 rounded-lg px-3 bg-white"><input type="number" min="0" max="95" x-model="profileForm.target_margin_pct" class="w-full py-2 outline-none text-sm bg-transparent num"><span class="text-gray-400 text-xs">%</span></div>
+                </div>
+              </div>
+              <label class="flex items-center gap-2 text-xs font-semibold text-gray-600 cursor-pointer select-none"><input type="checkbox" x-model="profileForm.is_free_shipping" class="accent-accent w-4 h-4">Livraison gratuite pour l'acheteur (le port est absorbé dans le prix)</label>
+              <div class="overflow-x-auto">
+                <table class="w-full text-sm min-w-[560px]">
+                  <thead><tr class="text-left text-xs text-gray-500 border-b border-gray-100"><th class="pb-2 font-semibold w-10"></th><th class="pb-2 font-semibold">Pays</th><th class="pb-2 font-semibold">Coût de port (€)</th><th class="pb-2 font-semibold">Délai min (j)</th><th class="pb-2 font-semibold">Délai max (j)</th></tr></thead>
+                  <tbody class="divide-y divide-gray-50">
+                    <template x-for="c in profileForm.countries" :key="'pfc-'+c.code">
+                      <tr :class="!c.enabled && 'opacity-50'">
+                        <td class="py-2"><input type="checkbox" x-model="c.enabled" class="accent-accent w-4 h-4"></td>
+                        <td class="font-medium" x-text="c.flag + ' ' + c.name"></td>
+                        <td><input type="number" min="0" step="0.1" x-model="c.shipping_cost" :disabled="!c.enabled" class="w-28 border border-gray-200 rounded-lg px-2 py-1.5 text-sm outline-none focus:border-accent bg-white num"></td>
+                        <td><input type="number" min="0" max="120" x-model="c.delivery_days_min" :disabled="!c.enabled" placeholder="—" class="w-20 border border-gray-200 rounded-lg px-2 py-1.5 text-sm outline-none focus:border-accent bg-white num"></td>
+                        <td><input type="number" min="0" max="180" x-model="c.delivery_days_max" :disabled="!c.enabled" placeholder="—" class="w-20 border border-gray-200 rounded-lg px-2 py-1.5 text-sm outline-none focus:border-accent bg-white num"></td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+              <p x-show="profileForm.error" class="text-xs text-rose-500" x-text="profileForm.error"></p>
+              <div class="flex justify-end gap-2">
+                <button @click="profileForm = null" class="text-xs font-semibold px-4 py-2 rounded-lg border border-gray-200 hover:bg-gray-50 transition">Annuler</button>
+                <button @click="saveShippingProfile()" :disabled="profileForm.saving" class="text-xs font-bold px-4 py-2 rounded-lg bg-accent text-ink-900 hover:bg-accent-dark disabled:opacity-40 transition"><i class="fa-solid mr-1.5" :class="profileForm.saving ? 'fa-spinner fa-spin' : 'fa-floppy-disk'"></i>Enregistrer le profil</button>
+              </div>
+            </div>
+          </template>
+
+          <!-- Non connecté / chargement / vide -->
+          <div x-show="!loggedIn" class="border border-dashed border-gray-200 rounded-xl p-8 text-center">
+            <i class="fa-solid fa-lock text-2xl text-gray-300 mb-2 block"></i>
+            <p class="text-sm font-semibold text-ink-900 mb-1">Connecte-toi pour créer tes profils de livraison</p>
+            <p class="text-xs text-gray-500">Ils alimentent l'analyse de prix avec tes vrais coûts de port.</p>
+          </div>
+          <div x-show="loggedIn && shippingProfilesLoading && !shippingProfiles.length" class="space-y-2"><div class="skeleton h-14 rounded-xl"></div><div class="skeleton h-14 rounded-xl"></div></div>
+          <div x-show="loggedIn && !shippingProfilesLoading && !shippingProfiles.length && !profileForm" class="border border-dashed border-gray-200 rounded-xl p-8 text-center">
+            <i class="fa-solid fa-truck-fast text-2xl text-gray-300 mb-2 block"></i>
+            <p class="text-sm font-semibold text-ink-900 mb-1">Aucun profil de livraison</p>
+            <p class="text-xs text-gray-500 mb-4">Sans profil, l'analyse utilise les coûts moyens par défaut. Crée un profil avec tes vrais tarifs fournisseur.</p>
+            <button @click="newProfileForm()" class="bg-ink-900 hover:bg-ink-700 text-white text-xs font-semibold px-4 py-2 rounded-lg transition"><i class="fa-solid fa-plus mr-1"></i>Créer un profil</button>
+          </div>
+
+          <!-- Liste -->
+          <div x-show="loggedIn && shippingProfiles.length" class="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <template x-for="pr in shippingProfiles" :key="pr.id">
+              <div class="border border-gray-100 rounded-xl p-4 card-hover transition">
+                <div class="flex items-start justify-between gap-2">
+                  <div class="min-w-0">
+                    <p class="text-sm font-semibold text-ink-900 truncate" x-text="pr.name"></p>
+                    <p class="text-[11px] text-gray-400 mt-0.5"><span x-text="pr.countries.length + ' pays'"></span> · marge cible <span class="num" x-text="fmtPct(pr.target_margin_pct)"></span><span x-show="pr.is_free_shipping"> · livraison gratuite</span></p>
+                  </div>
+                  <div class="flex gap-1 flex-shrink-0">
+                    <button @click="pricingForm.shipping_profile_id = pr.id; if (pr.is_free_shipping) pricingForm.free_shipping = true" class="text-[11px] font-semibold px-2 py-1 rounded-lg border transition" :class="pricingForm.shipping_profile_id === pr.id ? 'border-accent bg-accent-light text-accent-dark' : 'border-gray-200 hover:bg-gray-50'" x-text="pricingForm.shipping_profile_id === pr.id ? 'Utilisé' : 'Utiliser'"></button>
+                    <button @click="deleteShippingProfile(pr)" class="text-[11px] font-semibold px-2 py-1 rounded-lg border transition" :class="profileDeleteConfirm === pr.id ? 'bg-rose-500 border-rose-500 text-white' : 'border-gray-200 hover:bg-rose-50 hover:text-rose-500'"><i class="fa-solid" :class="profileDeleteConfirm === pr.id ? 'fa-check' : 'fa-trash'"></i><span x-show="profileDeleteConfirm === pr.id" class="ml-1">Confirmer ?</span></button>
+                  </div>
+                </div>
+                <div class="flex flex-wrap gap-1.5 mt-3">
+                  <template x-for="c in pr.countries" :key="pr.id + '-' + c.code">
+                    <span class="tag-pill bg-gray-100 text-gray-700" x-text="c.code + ' · ' + fmtEur(c.shipping_cost)"></span>
+                  </template>
+                </div>
+              </div>
+            </template>
           </div>
         </div>
 
@@ -2516,6 +3333,9 @@ function app() {
       this.pricingSaving = false;
       this.pricingSaved = false;
       this.pricingError = '';
+      // Phase 2 : analyse prix reelle, SEO reel et historique des tests
+      // (fiche reelle uniquement — voir loadModalPhase2).
+      this.loadModalPhase2(p);
     },
     // Sauvegarde coût fournisseur + marge cible (PATCH /api/listings/{id}/pricing).
     // Une fiche de démo (pas d'UUID backend) reste en mémoire seulement.
@@ -2541,6 +3361,7 @@ function app() {
         this.pricingDirty = false;
         this.pricingSaved = true;
         setTimeout(() => { this.pricingSaved = false; }, 2500);
+        this.refreshModalPricing();
       } catch (e) {
         this.pricingError = 'Enregistrement impossible : ' + (e.message || 'erreur inconnue');
       } finally {
@@ -2830,6 +3651,655 @@ function app() {
       });
       this.$nextTick(() => this.mountCharts());
     },
+    // =====================================================================
+    // ===== PHASE 2 — HELPERS COMMUNS =====
+    // =====================================================================
+    // Vrai des qu'une session Supabase existe (voir EDAPI._edPostAuth) —
+    // independant de la connexion Etsy : fournisseurs et profils de
+    // livraison appartiennent au compte EtsyDrop.
+    loggedIn: false,
+    // Fiche reelle = UUID backend (listings.id) ; une fiche de demo garde un
+    // id court ('necklace'…) et ne peut appeler aucun endpoint Phase 2.
+    isRealListing(p) { return !!p && /^[0-9a-f-]{36}$/i.test(String(p.id)); },
+    realListings() { return this.catalogProducts.filter(p => this.isRealListing(p)); },
+    fmtEur(v) {
+      return (typeof v === 'number' && !isNaN(v)) ? v.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €' : '—';
+    },
+    fmtLocal(v, currency) {
+      if (typeof v !== 'number' || isNaN(v)) return '—';
+      try { return v.toLocaleString('fr-FR', { style: 'currency', currency: currency || 'EUR' }); }
+      catch (e) { return v.toFixed(2) + ' ' + (currency || ''); }
+    },
+    fmtPct(v) {
+      return (typeof v === 'number' && !isNaN(v)) ? v.toLocaleString('fr-FR', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' %' : '—';
+    },
+    fmtDate(iso) {
+      const d = iso ? new Date(iso) : null;
+      return d && !isNaN(d) ? d.toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
+    },
+    // Statut de marge renvoye par le backend ('good' | 'close' | 'bad' | 'unknown').
+    marginStatusClass(status) {
+      return status === 'good' ? 'text-accent-dark' : (status === 'close' ? 'text-amber-600' : (status === 'bad' ? 'text-rose-500' : 'text-gray-400'));
+    },
+    marginStatusPill(status) {
+      return status === 'good' ? 'bg-accent-light text-accent-dark' : (status === 'close' ? 'bg-amber-100 text-amber-700' : (status === 'bad' ? 'bg-rose-100 text-rose-600' : 'bg-gray-100 text-gray-700'));
+    },
+    marginStatusLabel(status) {
+      return { good: 'Marge OK', close: 'Proche de la cible', bad: 'Insuffisante', unknown: 'Coût inconnu' }[status] || status;
+    },
+    // Pays supportes par etsy_fees.COUNTRIES (simulateur d'achat).
+    testCountryOptions: [
+      { code: 'FR', flag: '🇫🇷', name: 'France' }, { code: 'DE', flag: '🇩🇪', name: 'Allemagne' }, { code: 'IT', flag: '🇮🇹', name: 'Italie' },
+      { code: 'ES', flag: '🇪🇸', name: 'Espagne' }, { code: 'NL', flag: '🇳🇱', name: 'Pays-Bas' }, { code: 'BE', flag: '🇧🇪', name: 'Belgique' },
+      { code: 'GB', flag: '🇬🇧', name: 'Royaume-Uni' }, { code: 'US', flag: '🇺🇸', name: 'États-Unis' }, { code: 'CA', flag: '🇨🇦', name: 'Canada' },
+      { code: 'AU', flag: '🇦🇺', name: 'Australie' }, { code: 'CH', flag: '🇨🇭', name: 'Suisse' }
+    ],
+    freshApplyState() { return { confirming: false, applying: false, done: null, error: '' }; },
+
+    // =====================================================================
+    // ===== PHASE 2 — FOURNISSEURS (page Sourcing, /api/suppliers) =====
+    // =====================================================================
+    suppliers: [],
+    suppliersLoading: false,
+    suppliersError: '',
+    supplierConversations: [],
+    supplierDeleteConfirm: null,
+    supplierPlatforms: [
+      { value: 'eprolo', label: 'Eprolo', pill: 'bg-accent-light text-accent-dark' },
+      { value: 'cj', label: 'CJ Dropshipping', pill: 'bg-blue-50 text-blue-600' },
+      { value: 'aliexpress', label: 'AliExpress', pill: 'bg-amber-100 text-amber-700' },
+      { value: 'autre', label: 'Autre', pill: 'bg-gray-100 text-gray-700' }
+    ],
+    platformMeta(value) { return this.supplierPlatforms.find(p => p.value === value) || this.supplierPlatforms[3]; },
+    async loadSuppliers() {
+      if (!this.loggedIn) return;
+      this.suppliersLoading = true;
+      this.suppliersError = '';
+      try {
+        const [list, convs] = await Promise.all([
+          window.EDAPI.suppliers(),
+          window.EDAPI.supplierConversations().catch(() => [])
+        ]);
+        this.suppliers = Array.isArray(list) ? list : [];
+        this.supplierConversations = Array.isArray(convs) ? convs : [];
+      } catch (e) {
+        this.suppliersError = e.message || 'Chargement des fournisseurs impossible.';
+      } finally {
+        this.suppliersLoading = false;
+      }
+    },
+    conversationsFor(supplierId) { return this.supplierConversations.filter(c => c.supplier_id === supplierId); },
+    openConversationsCount() { return this.supplierConversations.filter(c => c.status === 'open').length; },
+    conversationStatusMeta(status) {
+      return {
+        open: { label: 'Ouvert', pill: 'bg-amber-100 text-amber-700' },
+        answered: { label: 'Répondu', pill: 'bg-accent-light text-accent-dark' },
+        closed: { label: 'Clos', pill: 'bg-gray-100 text-gray-700' }
+      }[status] || { label: status, pill: 'bg-gray-100 text-gray-700' };
+    },
+    // --- Modal creation / edition ---
+    supplierModal: null,
+    openSupplierModal(s) {
+      this.supplierModal = {
+        mode: s ? 'edit' : 'create',
+        id: s ? s.id : null,
+        hasApiKey: s ? !!s.has_api_key : false,
+        form: {
+          name: s ? s.name : '',
+          platform: s ? s.platform : 'eprolo',
+          api_key: '', api_secret: '',
+          contact_email: s ? (s.contact_email || '') : '',
+          notes: s ? (s.notes || '') : ''
+        },
+        saving: false, error: ''
+      };
+    },
+    async saveSupplier() {
+      const m = this.supplierModal;
+      if (!m || m.saving) return;
+      m.error = '';
+      if ((m.form.name || '').trim().length < 2) { m.error = 'Le nom doit faire au moins 2 caractères.'; return; }
+      // Champs optionnels omis si vides : Pydantic refuse '' pour l'email, et
+      // une cle vide en edition signifie « conserver la cle existante ».
+      const payload = { name: m.form.name.trim(), platform: m.form.platform };
+      if (m.form.contact_email.trim()) payload.contact_email = m.form.contact_email.trim();
+      if (m.form.notes.trim()) payload.notes = m.form.notes.trim();
+      if (m.form.api_key.trim()) payload.api_key = m.form.api_key.trim();
+      if (m.form.api_secret.trim()) payload.api_secret = m.form.api_secret.trim();
+      m.saving = true;
+      try {
+        if (m.mode === 'create') await window.EDAPI.supplierCreate(payload);
+        else await window.EDAPI.supplierUpdate(m.id, payload);
+        this.supplierModal = null;
+        await this.loadSuppliers();
+      } catch (e) {
+        m.error = e.message || 'Enregistrement impossible.';
+      } finally {
+        m.saving = false;
+      }
+    },
+    // Suppression en deux clics (le second confirme) — pas de window.confirm.
+    async deleteSupplier(s) {
+      if (this.supplierDeleteConfirm !== s.id) {
+        this.supplierDeleteConfirm = s.id;
+        setTimeout(() => { if (this.supplierDeleteConfirm === s.id) this.supplierDeleteConfirm = null; }, 4000);
+        return;
+      }
+      this.supplierDeleteConfirm = null;
+      try {
+        await window.EDAPI.supplierDelete(s.id);
+        if (this.supplierDetail && this.supplierDetail.supplier.id === s.id) this.supplierDetail = null;
+        await this.loadSuppliers();
+      } catch (e) {
+        this.suppliersError = e.message || 'Suppression impossible.';
+      }
+    },
+    // --- Fiche fournisseur : catalogue + messages ---
+    supplierDetail: null,
+    emptySupplierProductForm() {
+      return { name: '', base_price: '', currency: 'EUR', lead_time_days: '', moq: 1, weight_grams: '', linked_etsy_listing_id: '' };
+    },
+    async openSupplierDetail(s, tab) {
+      this.supplierDetail = {
+        supplier: s, tab: tab || 'products',
+        products: [], loading: true, error: '', notice: '',
+        productForm: this.emptySupplierProductForm(), productSaving: false, showProductForm: false,
+        importing: false,
+        msgForm: { subject: '', message: '', supplier_product_id: '' }, msgSending: false
+      };
+      await this.reloadSupplierProducts();
+    },
+    async reloadSupplierProducts() {
+      const d = this.supplierDetail;
+      if (!d) return;
+      d.loading = true;
+      d.error = '';
+      try {
+        const list = await window.EDAPI.supplierProducts(d.supplier.id);
+        d.products = Array.isArray(list) ? list : [];
+      } catch (e) {
+        d.error = e.message || 'Chargement des produits impossible.';
+      } finally {
+        d.loading = false;
+      }
+    },
+    async addSupplierProduct() {
+      const d = this.supplierDetail;
+      if (!d || d.productSaving) return;
+      const f = d.productForm;
+      d.error = '';
+      const price = parseFloat(f.base_price);
+      if ((f.name || '').trim().length < 2) { d.error = 'Nom du produit : 2 caractères minimum.'; return; }
+      if (isNaN(price) || price < 0) { d.error = 'Prix fournisseur invalide.'; return; }
+      const payload = { name: f.name.trim(), base_price: price, currency: f.currency || 'EUR', moq: Math.max(1, parseInt(f.moq, 10) || 1) };
+      if (f.lead_time_days !== '' && f.lead_time_days !== null) payload.lead_time_days = Math.max(0, parseInt(f.lead_time_days, 10) || 0);
+      if (f.weight_grams !== '' && f.weight_grams !== null) payload.weight_grams = Math.max(0, parseInt(f.weight_grams, 10) || 0);
+      if (f.linked_etsy_listing_id) payload.linked_etsy_listing_id = parseInt(f.linked_etsy_listing_id, 10);
+      d.productSaving = true;
+      try {
+        await window.EDAPI.supplierProductCreate(d.supplier.id, payload);
+        d.productForm = this.emptySupplierProductForm();
+        d.showProductForm = false;
+        await this.reloadSupplierProducts();
+        this.loadSuppliers(); // products_count
+      } catch (e) {
+        d.error = e.message || 'Ajout impossible.';
+      } finally {
+        d.productSaving = false;
+      }
+    },
+    async removeSupplierProduct(p) {
+      const d = this.supplierDetail;
+      if (!d) return;
+      try {
+        await window.EDAPI.supplierProductDelete(d.supplier.id, p.id);
+        await this.reloadSupplierProducts();
+        this.loadSuppliers();
+      } catch (e) {
+        d.error = e.message || 'Suppression impossible.';
+      }
+    },
+    async linkSupplierProduct(p, etsyListingId) {
+      const d = this.supplierDetail;
+      if (!d) return;
+      const id = etsyListingId ? parseInt(etsyListingId, 10) : null;
+      try {
+        const saved = await window.EDAPI.supplierProductLink(p.id, id);
+        p.linked_etsy_listing_id = saved.linked_etsy_listing_id;
+      } catch (e) {
+        d.error = e.message || 'Liaison impossible.';
+      }
+    },
+    listingNameForEtsyId(etsyId) {
+      if (!etsyId) return null;
+      const p = this.catalogProducts.find(x => String(x.etsyListingId) === String(etsyId));
+      return p ? p.name : ('Fiche #' + etsyId);
+    },
+    async importSupplierProducts() {
+      const d = this.supplierDetail;
+      if (!d || d.importing) return;
+      d.importing = true;
+      d.error = '';
+      d.notice = '';
+      try {
+        const r = await window.EDAPI.supplierImport(d.supplier.id);
+        d.notice = r.message || (r.imported + ' produit(s) importé(s).');
+        if (r.imported) { await this.reloadSupplierProducts(); this.loadSuppliers(); }
+      } catch (e) {
+        d.error = e.message || 'Import impossible.';
+      } finally {
+        d.importing = false;
+      }
+    },
+    async sendSupplierMessage() {
+      const d = this.supplierDetail;
+      if (!d || d.msgSending) return;
+      const f = d.msgForm;
+      d.error = '';
+      d.notice = '';
+      if ((f.subject || '').trim().length < 2 || (f.message || '').trim().length < 2) { d.error = 'Sujet et message : 2 caractères minimum.'; return; }
+      const payload = { supplier_id: d.supplier.id, subject: f.subject.trim(), message: f.message.trim() };
+      if (f.supplier_product_id) payload.supplier_product_id = f.supplier_product_id;
+      d.msgSending = true;
+      try {
+        const c = await window.EDAPI.supplierConversationCreate(payload);
+        this.supplierConversations.unshift(c);
+        d.msgForm = { subject: '', message: '', supplier_product_id: '' };
+        d.notice = c.email_sent
+          ? 'Message envoyé par email au fournisseur.'
+          : 'Message enregistré — aucun email envoyé (SMTP non configuré ou fournisseur sans email de contact).';
+      } catch (e) {
+        d.error = e.message || 'Envoi impossible.';
+      } finally {
+        d.msgSending = false;
+      }
+    },
+    async setConversationStatus(c, status) {
+      try {
+        const saved = await window.EDAPI.supplierConversationUpdate(c.id, status);
+        c.status = saved.status;
+      } catch (e) {
+        if (this.supplierDetail) this.supplierDetail.error = e.message || 'Mise à jour impossible.';
+      }
+    },
+
+    // =====================================================================
+    // ===== PHASE 2 — PRIX PAR PAYS & PROFILS DE LIVRAISON (page Coûts) =====
+    // =====================================================================
+    shippingProfiles: [],
+    shippingProfilesLoading: false,
+    shippingProfilesError: '',
+    profileForm: null,
+    profileDeleteConfirm: null,
+    pricingForm: { listing_id: '', cost_price: 4.20, target_margin_pct: 35, free_shipping: false, vat_applicable: true, current_price: '', shipping_profile_id: '' },
+    pricingAnalysis: null,
+    pricingAnalyzing: false,
+    pricingAnalyzeError: '',
+    pricingApplyState: { confirming: false, applying: false, done: null, error: '' },
+    async loadShippingProfiles() {
+      if (!this.loggedIn) return;
+      this.shippingProfilesLoading = true;
+      this.shippingProfilesError = '';
+      try {
+        const list = await window.EDAPI.shippingProfiles();
+        this.shippingProfiles = Array.isArray(list) ? list : [];
+      } catch (e) {
+        this.shippingProfilesError = e.message || 'Chargement des profils impossible.';
+      } finally {
+        this.shippingProfilesLoading = false;
+      }
+    },
+    newProfileForm() {
+      // Pre-rempli avec les 6 pays de reference et leurs couts moyens (this.countries).
+      this.profileForm = {
+        name: '', is_free_shipping: false, target_margin_pct: 35,
+        countries: this.countries.map(c => ({ code: c.code, name: c.name, flag: c.flag, enabled: true, shipping_cost: c.shipping, delivery_days_min: '', delivery_days_max: '' })),
+        saving: false, error: ''
+      };
+    },
+    async saveShippingProfile() {
+      const f = this.profileForm;
+      if (!f || f.saving) return;
+      f.error = '';
+      if ((f.name || '').trim().length < 2) { f.error = 'Nom du profil : 2 caractères minimum.'; return; }
+      const countries = f.countries.filter(c => c.enabled).map(c => {
+        const row = { code: c.code, name: c.name, shipping_cost: Math.max(0, parseFloat(c.shipping_cost) || 0) };
+        if (c.delivery_days_min !== '') row.delivery_days_min = Math.max(0, parseInt(c.delivery_days_min, 10) || 0);
+        if (c.delivery_days_max !== '') row.delivery_days_max = Math.max(0, parseInt(c.delivery_days_max, 10) || 0);
+        return row;
+      });
+      if (!countries.length) { f.error = 'Sélectionne au moins un pays.'; return; }
+      f.saving = true;
+      try {
+        await window.EDAPI.shippingProfileCreate({
+          name: f.name.trim(),
+          is_free_shipping: !!f.is_free_shipping,
+          target_margin_pct: Math.min(95, Math.max(0, parseFloat(f.target_margin_pct) || 0)),
+          countries
+        });
+        this.profileForm = null;
+        await this.loadShippingProfiles();
+      } catch (e) {
+        f.error = e.message || 'Enregistrement impossible.';
+      } finally {
+        f.saving = false;
+      }
+    },
+    async deleteShippingProfile(p) {
+      if (this.profileDeleteConfirm !== p.id) {
+        this.profileDeleteConfirm = p.id;
+        setTimeout(() => { if (this.profileDeleteConfirm === p.id) this.profileDeleteConfirm = null; }, 4000);
+        return;
+      }
+      this.profileDeleteConfirm = null;
+      try {
+        await window.EDAPI.shippingProfileDelete(p.id);
+        if (this.pricingForm.shipping_profile_id === p.id) this.pricingForm.shipping_profile_id = '';
+        await this.loadShippingProfiles();
+      } catch (e) {
+        this.shippingProfilesError = e.message || 'Suppression impossible.';
+      }
+    },
+    // Selection d'une fiche reelle : pre-remplit cout, marge cible et prix actuel.
+    onPricingListingChange() {
+      const p = this.catalogProducts.find(x => x.id === this.pricingForm.listing_id);
+      if (!p) return;
+      if (typeof p.costPrice === 'number') this.pricingForm.cost_price = p.costPrice;
+      if (typeof p.targetMargin === 'number') this.pricingForm.target_margin_pct = p.targetMargin;
+      if (typeof p.priceMin === 'number') this.pricingForm.current_price = p.priceMin;
+      this.pricingForm.free_shipping = !!p.freeShipping;
+    },
+    pricingSelectedListing() { return this.catalogProducts.find(x => x.id === this.pricingForm.listing_id) || null; },
+    buildPricingPayload() {
+      const f = this.pricingForm;
+      const payload = {
+        cost_price: Math.max(0, parseFloat(f.cost_price) || 0),
+        target_margin_pct: Math.min(95, Math.max(0, parseFloat(f.target_margin_pct) || 0)),
+        free_shipping: !!f.free_shipping,
+        vat_applicable: !!f.vat_applicable
+      };
+      if (f.listing_id) payload.listing_id = f.listing_id;
+      if (f.shipping_profile_id) payload.shipping_profile_id = f.shipping_profile_id;
+      const cur = parseFloat(f.current_price);
+      if (f.current_price !== '' && f.current_price !== null && !isNaN(cur)) payload.current_price = Math.max(0, cur);
+      return payload;
+    },
+    async runPricingAnalysis() {
+      if (this.pricingAnalyzing) return;
+      if (!this.loggedIn) { this.pricingAnalyzeError = 'Connecte-toi pour lancer une analyse.'; return; }
+      this.pricingAnalyzeError = '';
+      this.pricingApplyState = this.freshApplyState();
+      const payload = this.buildPricingPayload();
+      if (!(payload.cost_price > 0)) { this.pricingAnalyzeError = 'Renseigne un coût fournisseur supérieur à 0.'; return; }
+      this.pricingAnalyzing = true;
+      try {
+        this.pricingAnalysis = await window.EDAPI.pricingAnalyze(payload);
+      } catch (e) {
+        this.pricingAnalyzeError = e.message || 'Analyse impossible.';
+      } finally {
+        this.pricingAnalyzing = false;
+      }
+    },
+    // Ecrit le prix sur Etsy (updateListing / updateListingInventory) :
+    // action visible par les acheteurs → deux clics, le second confirme.
+    async applyPriceOnEtsy(listingId, priceEur, st) {
+      if (!listingId || !(priceEur > 0) || st.applying) return;
+      if (!st.confirming) {
+        st.confirming = true;
+        setTimeout(() => { st.confirming = false; }, 6000);
+        return;
+      }
+      st.confirming = false;
+      st.applying = true;
+      st.error = '';
+      st.done = null;
+      try {
+        const r = await window.EDAPI.pricingApply(listingId, Math.round(priceEur * 100) / 100);
+        st.done = r;
+        const p = this.catalogProducts.find(x => x.id === listingId);
+        if (p) { p.priceMin = r.price_eur; p.priceMax = r.price_eur; }
+      } catch (e) {
+        st.error = e.message || 'Mise à jour du prix impossible.';
+      } finally {
+        st.applying = false;
+      }
+    },
+
+    // =====================================================================
+    // ===== PHASE 2 — SEO (page SEO : tendances + analyse/optimisation) =====
+    // =====================================================================
+    // Requete en anglais par defaut : les fiches visent le marche US/UK.
+    seoQuery: 'personalized name necklace',
+    seoTrending: null,
+    seoTrendingLoading: false,
+    seoTrendingError: '',
+    seoListingId: '',
+    seoAnalysis: null,
+    seoAnalysisLoading: false,
+    seoAnalysisError: '',
+    seoOptimized: null,
+    seoOptimizing: false,
+    seoOptimizeError: '',
+    seoApplyState: { confirming: false, applying: false, done: null, error: '' },
+    seoSourceMeta(source) {
+      return {
+        taxonomy: { label: 'Catégorie Etsy', pill: 'bg-blue-50 text-blue-600' },
+        catalogue: { label: 'Tes fiches', pill: 'bg-accent-light text-accent-dark' },
+        market: { label: 'Marché Etsy', pill: 'bg-purple-50 text-purple-600' }
+      }[source] || { label: source, pill: 'bg-gray-100 text-gray-700' };
+    },
+    async runSeoTrending() {
+      if (this.seoTrendingLoading) return;
+      const q = (this.seoQuery || '').trim();
+      if (!this.loggedIn) { this.seoTrendingError = 'Connecte-toi pour interroger Etsy.'; return; }
+      if (q.length < 2 && !this.seoListingId) { this.seoTrendingError = 'Saisis au moins 2 caractères.'; return; }
+      this.seoTrendingLoading = true;
+      this.seoTrendingError = '';
+      const params = {};
+      if (q.length >= 2) params.q = q.slice(0, 80);
+      if (this.seoListingId) params.listing_id = this.seoListingId;
+      try {
+        this.seoTrending = await window.EDAPI.seoTrending(params);
+      } catch (e) {
+        this.seoTrendingError = e.message || 'Recherche impossible.';
+      } finally {
+        this.seoTrendingLoading = false;
+      }
+    },
+    // SeoAnalyzeResponse → forme lqsChecks [{section, score, items:[{status,text}]}]
+    // ('missing' backend → 'error' cote template : icone rouge).
+    seoSectionsFrom(a) {
+      const map = s => (s && s.checks ? s.checks : []).map(c => ({ status: c.status === 'missing' ? 'error' : c.status, text: c.text }));
+      return [
+        { section: 'Titre', score: a.title.score, items: map(a.title) },
+        { section: 'Description', score: a.description.score, items: map(a.description) },
+        { section: 'Tags', score: a.tags.score, items: map(a.tags) }
+      ];
+    },
+    async loadSeoAnalysis() {
+      this.seoAnalysis = null;
+      this.seoOptimized = null;
+      this.seoAnalysisError = '';
+      this.seoOptimizeError = '';
+      this.seoApplyState = this.freshApplyState();
+      if (!this.seoListingId) return;
+      this.seoAnalysisLoading = true;
+      const id = this.seoListingId;
+      try {
+        const r = await window.EDAPI.seoAnalyze(id);
+        if (this.seoListingId === id) this.seoAnalysis = r;
+      } catch (e) {
+        this.seoAnalysisError = e.message || 'Analyse SEO impossible.';
+      } finally {
+        this.seoAnalysisLoading = false;
+      }
+    },
+    seoPageScore() { return this.seoAnalysis ? this.seoAnalysis.score : this.lqsScore; },
+    seoPageChecks() { return this.seoAnalysis ? this.seoSectionsFrom(this.seoAnalysis) : this.lqsChecks; },
+    seoPageListingName() {
+      const p = this.catalogProducts.find(x => x.id === this.seoListingId);
+      return p ? p.name : 'Collier prénom plaqué or';
+    },
+    async runSeoOptimize() {
+      if (!this.seoListingId || this.seoOptimizing) return;
+      this.seoOptimizing = true;
+      this.seoOptimizeError = '';
+      this.seoApplyState = this.freshApplyState();
+      try {
+        this.seoOptimized = await window.EDAPI.seoOptimize(this.seoListingId);
+      } catch (e) {
+        this.seoOptimizeError = e.message || 'Optimisation impossible.';
+      } finally {
+        this.seoOptimizing = false;
+      }
+    },
+    // Pousse titre/description/tags optimises sur Etsy (updateListing) —
+    // deux clics. Met a jour la fiche locale puis relance l'analyse.
+    async applySeoOnEtsy(listingId, optimized, st, onDone) {
+      if (!listingId || !optimized || st.applying) return;
+      if (!st.confirming) {
+        st.confirming = true;
+        setTimeout(() => { st.confirming = false; }, 6000);
+        return;
+      }
+      st.confirming = false;
+      st.applying = true;
+      st.error = '';
+      st.done = null;
+      try {
+        const r = await window.EDAPI.seoApply(listingId, { title: optimized.title, description: optimized.description, tags: optimized.tags });
+        st.done = r;
+        const p = this.catalogProducts.find(x => x.id === listingId);
+        if (p) { p.name = optimized.title; p.description = optimized.description; p.tags = optimized.tags.slice(); }
+        if (typeof onDone === 'function') onDone();
+      } catch (e) {
+        st.error = e.message || 'Mise à jour Etsy impossible.';
+      } finally {
+        st.applying = false;
+      }
+    },
+
+    // =====================================================================
+    // ===== PHASE 2 — MODAL CATALOGUE : prix reel, SEO reel, test produit =====
+    // =====================================================================
+    modalPricing: null,
+    modalPricingLoading: false,
+    modalPricingError: '',
+    modalPricingApply: { confirming: false, applying: false, done: null, error: '' },
+    modalSeo: null,
+    modalSeoLoading: false,
+    modalSeoError: '',
+    modalOptimized: null,
+    modalOptimizing: false,
+    modalOptimizeError: '',
+    modalSeoApply: { confirming: false, applying: false, done: null, error: '' },
+    testForm: { destination_country: 'US', variant_selected: '', quantity: 1 },
+    testResult: null,
+    testHistory: [],
+    testRunning: false,
+    testError: '',
+    testHistoryOpen: false,
+    loadModalPhase2(p) {
+      this.modalPricing = null; this.modalPricingError = ''; this.modalPricingApply = this.freshApplyState();
+      this.modalSeo = null; this.modalSeoError = ''; this.modalOptimized = null; this.modalOptimizeError = ''; this.modalSeoApply = this.freshApplyState();
+      this.testResult = null; this.testHistory = []; this.testError = ''; this.testHistoryOpen = false;
+      this.testForm = { destination_country: 'US', variant_selected: '', quantity: 1 };
+      if (!this.isRealListing(p) || !this.loggedIn) return;
+      this.refreshModalPricing();
+      this.refreshModalSeo();
+      window.EDAPI.productTestResults(p.id)
+        .then(h => { if (this.selectedProduct && this.selectedProduct.id === p.id) this.testHistory = Array.isArray(h) ? h : []; })
+        .catch(() => {});
+    },
+    // Analyse backend (etsy_fees) pour la fiche ouverte — remplace
+    // l'estimation locale countryPricingRows() des que le cout est connu.
+    async refreshModalPricing() {
+      const p = this.selectedProduct;
+      if (!this.isRealListing(p) || !this.loggedIn || typeof p.costPrice !== 'number' || !(p.costPrice > 0)) { this.modalPricing = null; return; }
+      this.modalPricingLoading = true;
+      this.modalPricingError = '';
+      this.modalPricingApply = this.freshApplyState();
+      try {
+        const r = await window.EDAPI.pricingAnalyze({
+          listing_id: p.id,
+          cost_price: p.costPrice,
+          target_margin_pct: Math.min(95, Math.max(0, typeof p.targetMargin === 'number' ? p.targetMargin : 35)),
+          free_shipping: !!p.freeShipping,
+          current_price: typeof p.priceMin === 'number' ? p.priceMin : undefined
+        });
+        if (this.selectedProduct && this.selectedProduct.id === p.id) this.modalPricing = r;
+      } catch (e) {
+        this.modalPricingError = e.message || 'Analyse impossible.';
+      } finally {
+        this.modalPricingLoading = false;
+      }
+    },
+    async refreshModalSeo() {
+      const p = this.selectedProduct;
+      if (!this.isRealListing(p) || !this.loggedIn) return;
+      this.modalSeoLoading = true;
+      this.modalSeoError = '';
+      try {
+        const r = await window.EDAPI.seoAnalyze(p.id);
+        if (this.selectedProduct && this.selectedProduct.id === p.id) this.modalSeo = r;
+      } catch (e) {
+        this.modalSeoError = e.message || 'Analyse SEO impossible.';
+      } finally {
+        this.modalSeoLoading = false;
+      }
+    },
+    modalLqsScore() { return this.modalSeo ? this.modalSeo.score : this.lqsScore; },
+    modalLqsChecks() {
+      if (this.modalSeo) return this.seoSectionsFrom(this.modalSeo);
+      return this.lqsChecksFor(this.selectedProduct ? this.selectedProduct.tags.length : 0);
+    },
+    // « Générer fiche Etsy » : fiche de demo → texte local ; fiche reelle →
+    // /api/seo/optimize (Claude, fallback heuristique), sortie en anglais.
+    async generateListing() {
+      const p = this.selectedProduct;
+      if (!p) return;
+      if (!this.isRealListing(p) || !this.loggedIn || this.modalOptimized) {
+        this.generatedListingVisible = !this.generatedListingVisible;
+        return;
+      }
+      if (this.modalOptimizing) return;
+      this.modalOptimizing = true;
+      this.modalOptimizeError = '';
+      try {
+        const r = await window.EDAPI.seoOptimize(p.id);
+        if (this.selectedProduct && this.selectedProduct.id === p.id) { this.modalOptimized = r; this.generatedListingVisible = true; }
+      } catch (e) {
+        this.modalOptimizeError = e.message || 'Génération impossible.';
+      } finally {
+        this.modalOptimizing = false;
+      }
+    },
+    generatedTags(p) { return this.modalOptimized ? this.modalOptimized.tags : p.tags; },
+    async runProductTest() {
+      const p = this.selectedProduct;
+      if (!this.isRealListing(p) || !this.loggedIn || this.testRunning) return;
+      this.testRunning = true;
+      this.testError = '';
+      const payload = {
+        listing_id: p.id,
+        destination_country: this.testForm.destination_country,
+        quantity: Math.max(1, Math.min(100, parseInt(this.testForm.quantity, 10) || 1))
+      };
+      if (this.testForm.variant_selected) payload.variant_selected = this.testForm.variant_selected;
+      try {
+        const r = await window.EDAPI.productTestSimulate(payload);
+        this.testResult = r;
+        this.testHistory.unshift(r);
+      } catch (e) {
+        this.testError = e.message || 'Simulation impossible.';
+      } finally {
+        this.testRunning = false;
+      }
+    },
+    testLineClass(kind) {
+      return kind === 'buyer' ? 'text-ink-900 font-semibold' : (kind === 'net' ? 'text-accent-dark font-bold' : 'text-rose-500');
+    },
+
     init() {
       this.computeCalc();
       this.$watch('calc.cost', () => this.computeCalc());
