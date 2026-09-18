@@ -350,8 +350,16 @@
         state.revenueTotal = revenue ? revenue.revenue_gross : 0;
         state.revenueDisplay = revenue ? revenue.revenue_gross : 0;
 
-        const listings = await window.EDAPI.listings().catch(() => null);
+        // console.log temporaires (diagnostic Catalogue à 0 fiche) — à retirer
+        // une fois confirmé que /api/listings/ est bien reçu et mappé.
+        console.log('[EtsyDrop] Appel GET /api/listings/…');
+        const listings = await window.EDAPI.listings().catch((e) => {
+          console.error('[EtsyDrop] GET /api/listings/ a échoué :', e);
+          return null;
+        });
+        console.log('[EtsyDrop] Réponse /api/listings/ :', listings);
         state.catalogProducts = Array.isArray(listings) ? listings.map(_mapListing) : [];
+        console.log('[EtsyDrop] catalogProducts assigné, count =', state.catalogProducts.length, state.catalogProducts);
 
         const orders = await window.EDAPI.orders().catch(() => null);
         state.orders = Array.isArray(orders) ? orders.map(_mapOrder) : [];
@@ -361,12 +369,48 @@
     }
   };
 
+  /* ---- Déclenche _edPostAuth() une fois Alpine réellement prêt.
+     Alpine (script `defer`, voir plus bas dans <head>) s'initialise et émet
+     "alpine:initialized" AVANT que "DOMContentLoaded" ne se déclenche sur ce
+     document (un script `defer` s'exécute après le parsing du DOM mais
+     toujours avant DOMContentLoaded). Ce bloc-ci est un <script> NON deferré,
+     exécuté pendant le parsing du <head> : le addEventListener('alpine:
+     initialized', …) posé à l'intérieur du handler DOMContentLoaded arrivait
+     donc TOUJOURS après que l'événement ait déjà été émis — l'écouteur
+     n'était jamais déclenché, et _edPostAuth() ne tournait alors que sur le
+     setTimeout(500ms) de secours après une redirection OAuth Etsy (jamais
+     sur un rechargement de page normal, où catalogProducts/etsyConnected
+     restaient bloqués sur leurs valeurs par défaut). Un polling court, sans
+     dépendre d'un événement qui a pu déjà avoir eu lieu, est fiable dans les
+     deux cas. ---- */
+  function _runPostAuthWhenReady(attempt) {
+    attempt = attempt || 0;
+    let state = null;
+    try {
+      // Alpine.$data() lève une exception (pas juste undefined) tant que
+      // l'élément [x-data] n'a pas encore été traité par Alpine — d'où le
+      // try/catch, indispensable pour que le polling puisse réessayer au
+      // lieu de planter dès la première tentative trop précoce.
+      const rootEl = document.querySelector('[x-data]');
+      state = (window.Alpine && rootEl) ? window.Alpine.$data(rootEl) : null;
+    } catch (e) {
+      state = null;
+    }
+    if (state) {
+      window._edPostAuth();
+    } else if (attempt < 50) {
+      setTimeout(() => _runPostAuthWhenReady(attempt + 1), 100);
+    } else {
+      console.warn('[EtsyDrop] Alpine jamais prêt après 5s — _edPostAuth() abandonné.');
+    }
+  }
+
   /* ---- Bootstrap ---- */
   document.addEventListener('DOMContentLoaded', function () {
     _restoreSession();
 
     if (window.EDAPI.isLoggedIn) {
-      document.addEventListener('alpine:initialized', () => window._edPostAuth(), { once: true });
+      _runPostAuthWhenReady();
     } else {
       injectLoginModal();
     }
@@ -374,10 +418,6 @@
     // Etsy redirige ici avec ?etsy_connected=true ou ?etsy_error=... une fois
     // l'échange terminé côté backend (voir routers/auth.py > /etsy/callback).
     const params = new URLSearchParams(window.location.search);
-    if ((params.get('etsy_connected') || params.get('etsy_error')) && window.EDAPI.isLoggedIn) {
-      document.addEventListener('alpine:initialized', () => window._edPostAuth(), { once: true });
-      setTimeout(() => window._edPostAuth(), 500);
-    }
     if (params.get('etsy_connected') || params.get('etsy_error')) {
       window.history.replaceState({}, '', window.location.pathname);
     }
