@@ -29,8 +29,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 
 from database import get_current_user, get_supabase
-from etsy_client import etsy_get, sync_etsy_listings, sync_etsy_orders
-from models import CurrentUser, EtsyOAuthCallback, EtsyOAuthLoginResponse
+from etsy_client import etsy_get, fetch_public, get_etsy_access_token, sync_etsy_listings, sync_etsy_orders
+from models import CurrentUser, EtsyDebugStatus, EtsyOAuthCallback, EtsyOAuthLoginResponse
 
 router = APIRouter()
 logger = logging.getLogger("etsydrop.auth")
@@ -254,3 +254,87 @@ async def get_me(user: CurrentUser = Depends(get_current_user)):
     user.etsy_shop_connected = bool(result.data)
     user.etsy_shop_name = result.data[0].get("shop_name") if result.data else None
     return user
+
+
+# === DIAGNOSTIC DE LA CONNEXION ETSY ===
+@router.get("/etsy/debug", response_model=EtsyDebugStatus)
+async def etsy_debug(
+    probe_oauth: bool = Query(True, description="Sonde un GET authentifié (déclenche le refresh préventif si le token expire)"),
+    user: CurrentUser = Depends(get_current_user),
+):
+    """
+    Explique POURQUOI une sync peut renvoyer 0 : shop_id présent ? token en
+    base ? encore valide (updated_at + expires_in) ? API publique OK ? OAuth
+    OK ? Combien de fiches/commandes en DB ? Aucun secret n'est renvoyé (les
+    tokens ne quittent jamais le backend — seuls des booléens sortent).
+    """
+    from datetime import datetime, timedelta, timezone
+
+    supabase = get_supabase()
+    row = (
+        supabase.table("etsy_tokens")
+        .select("shop_id,shop_name,access_token,refresh_token,expires_in,updated_at")
+        .eq("user_id", user.id)
+        .maybe_single()
+        .execute()
+    )
+    data = row.data if (row and row.data) else None
+    status = EtsyDebugStatus(connected=bool(data))
+    if not data:
+        status.problems.append("Aucune ligne etsy_tokens pour ce compte — boutique jamais connectée (ou déconnectée).")
+    else:
+        status.shop_id = data.get("shop_id")
+        status.shop_name = data.get("shop_name")
+        status.has_access_token = bool(data.get("access_token"))
+        status.has_refresh_token = bool(data.get("refresh_token"))
+        if not status.shop_id:
+            status.problems.append("shop_id NULL — reconnecte la boutique en indiquant son nom exact.")
+        if not status.has_access_token:
+            status.problems.append("access_token NULL en base.")
+        if not status.has_refresh_token:
+            status.problems.append("refresh_token NULL — le token ne pourra pas être rafraîchi après 1 h.")
+        try:
+            updated_at = datetime.fromisoformat(str(data.get("updated_at")).replace("Z", "+00:00"))
+            if updated_at.tzinfo is None:
+                updated_at = updated_at.replace(tzinfo=timezone.utc)
+            expires_at = updated_at + timedelta(seconds=int(data.get("expires_in") or 3600))
+            status.expires_at = expires_at
+            remaining = int((expires_at - datetime.now(timezone.utc)).total_seconds())
+            status.seconds_remaining = remaining
+            status.token_valid = remaining > 0 and status.has_access_token
+            if remaining <= 0:
+                status.problems.append("access_token expiré (durée de vie Etsy : 1 h) — un refresh automatique est tenté à chaque appel authentifié.")
+        except (TypeError, ValueError):
+            status.problems.append("updated_at illisible — impossible de dater le token.")
+
+    # Compteurs DB (scopés user)
+    for table, attr in (("listings", "listings_in_db"), ("orders", "orders_in_db")):
+        try:
+            res = supabase.table(table).select("id", count="exact").eq("user_id", user.id).execute()
+            setattr(status, attr, int(res.count or 0))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Comptage %s échoué pour user_id=%s : %s", table, user.id, exc)
+
+    # API publique (clé d'app seule) — indépendante du token OAuth
+    if status.shop_id:
+        try:
+            payload = await fetch_public(f"/shops/{status.shop_id}/listings/active", params={"limit": 1})
+            status.public_api_ok = True
+            status.etsy_active_listings = int(payload.get("count") or 0) if isinstance(payload, dict) else None
+            if status.etsy_active_listings == 0:
+                status.problems.append("Etsy ne renvoie aucune fiche ACTIVE pour ce shop_id (brouillons/inactives ?).")
+        except HTTPException as exc:
+            status.problems.append(f"API publique Etsy en échec ({exc.detail}) — clés ETSY_API_KEY/SECRET ou shop_id invalides.")
+
+    # Sonde OAuth (refresh préventif inclus) — un GET léger authentifié
+    if probe_oauth and data and status.has_access_token:
+        try:
+            token = await get_etsy_access_token(user.id)
+            await etsy_get(f"/shops/{status.shop_id}/listings/active" if status.shop_id else "/openapi-ping", access_token=token, params={"limit": 1})
+            status.oauth_probe_ok = True
+            status.token_valid = True
+        except HTTPException as exc:
+            status.oauth_probe_ok = False
+            status.problems.append(f"Sonde OAuth en échec : {exc.detail}")
+
+    return status

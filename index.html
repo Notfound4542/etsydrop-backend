@@ -222,6 +222,16 @@
     productTestSimulate: (d)         => api('/api/product-test/simulate', { method:'POST', body:JSON.stringify(d) }),
     productTestResults:  (listingId) => api('/api/product-test/results/' + listingId),
 
+    // === SOURCING ALIEXPRESS (backend/routers/aliexpress.py) — clés API côté serveur uniquement ===
+    aliexpressSearch:  (q, page, limit) => api('/api/aliexpress/search?' + new URLSearchParams({ q, page: page || 1, limit: limit || 20 }).toString()),
+    aliexpressProduct: (productId)      => api('/api/aliexpress/product/' + encodeURIComponent(productId)),
+    aliexpressImport:  (d)              => api('/api/aliexpress/import', { method:'POST', body:JSON.stringify(d) }),
+    // Produits fournisseur liés à une fiche Etsy (coût d'achat réel dans Coûts & Expédition)
+    linkedSupplierProducts: ()          => api('/api/suppliers/products/linked'),
+
+    // === DIAGNOSTIC CONNEXION ETSY (backend/routers/auth.py > /etsy/debug) ===
+    etsyDebug: () => api('/api/auth/etsy/debug'),
+
     // Health
     health: () => fetch(BACKEND + '/api/health').then(r => r.json()),
   };
@@ -447,6 +457,7 @@
       state.loggedIn = true;
       if (typeof state.loadSuppliers === 'function') state.loadSuppliers();
       if (typeof state.loadShippingProfiles === 'function') state.loadShippingProfiles();
+      if (typeof state.loadLinkedSupplierProducts === 'function') state.loadLinkedSupplierProducts();
 
       // Une fois la boutique connectée, les données réelles (même vides/à
       // zéro) DOIVENT remplacer les données de démo — sinon un échec d'appel
@@ -568,7 +579,12 @@
       const parts = [];
       parts.push(listingsResult.error
         ? ('fiches : erreur (' + listingsResult.error + ')')
-        : (listingsResult.synced + ' fiche(s) synchronisée(s)' + (typeof listingsResult.with_image === 'number' ? ' (' + listingsResult.with_image + ' avec image, ' + listingsResult.with_variants + ' avec variantes)' : '')));
+        : (listingsResult.synced + ' fiche(s) synchronisée(s) sur ' + listingsResult.received + ' reçue(s)' + (typeof listingsResult.with_image === 'number' ? ' (' + listingsResult.with_image + ' avec image, ' + listingsResult.with_variants + ' avec variantes)' : '')));
+      // SyncResult.errors : raisons lisibles d'un compteur à 0 (token OAuth
+      // expiré, aucune fiche active, rate limit…) — voir etsy_client.py.
+      if (Array.isArray(listingsResult.errors) && listingsResult.errors.length) {
+        parts.push('détails : ' + listingsResult.errors.join(' | '));
+      }
       parts.push(ordersResult.error ? ('commandes : erreur (' + ordersResult.error + ')') : (ordersResult.synced + ' commande(s) synchronisée(s)'));
       alert('Resynchronisation Etsy : ' + parts.join(', '));
     } finally {
@@ -1481,8 +1497,141 @@
           <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Alertes stock</p><p class="text-2xl font-extrabold text-rose-500">3</p><p class="text-xs text-rose-500 font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +1 vs mois dernier</p></div>
         </div>
 
+        <!-- === ONGLETS SOURCING : Mes fournisseurs | AliExpress === -->
+        <div class="flex items-center gap-2 flex-wrap">
+          <div class="flex bg-gray-100 rounded-lg p-0.5">
+            <button @click="sourcingTab = 'suppliers'" class="text-xs font-semibold px-4 py-2 rounded-md transition" :class="sourcingTab === 'suppliers' ? 'bg-white shadow-card text-ink-900' : 'text-gray-600 hover:text-ink-900'"><i class="fa-solid fa-truck-ramp-box mr-1.5"></i>Mes fournisseurs</button>
+            <button @click="sourcingTab = 'aliexpress'" class="text-xs font-semibold px-4 py-2 rounded-md transition" :class="sourcingTab === 'aliexpress' ? 'bg-white shadow-card text-ink-900' : 'text-gray-600 hover:text-ink-900'"><i class="fa-brands fa-alipay mr-1.5"></i>AliExpress</button>
+          </div>
+          <span x-show="sourcingTab === 'aliexpress' && aliSearch.source" class="tag-pill" :class="aliSearch.source === 'affiliate_api' ? 'bg-accent-light text-accent-dark' : 'bg-amber-100 text-amber-700'" x-text="aliSearch.source === 'affiliate_api' ? 'API officielle' : 'Mode repli (pages publiques)'"></span>
+        </div>
+
+        <!-- === SOURCING ALIEXPRESS (/api/aliexpress) === -->
+        <div x-show="sourcingTab === 'aliexpress'" class="bg-white rounded-xl border border-gray-200 shadow-card p-5 space-y-4">
+          <div class="flex items-start justify-between flex-wrap gap-3">
+            <div>
+              <h3 class="font-bold text-sm text-ink-900">Rechercher sur AliExpress</h3>
+              <p class="text-xs text-gray-500 mt-0.5">Prix en USD, note et ventes réelles. « Importer » ajoute le produit à ton fournisseur AliExpress (créé automatiquement) et peut le lier à une fiche Etsy.</p>
+            </div>
+          </div>
+          <div class="flex gap-2 flex-wrap">
+            <input type="text" x-model="aliSearch.query" @keydown.enter="runAliSearch(1)" maxlength="120" placeholder="ex. name necklace, mushroom lamp…" class="flex-1 min-w-[220px] border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-accent">
+            <select x-model="aliSearch.listing_id" class="border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-accent bg-white max-w-[260px]">
+              <option value="">Lier à une fiche Etsy (optionnel)</option>
+              <template x-for="l in realListings()" :key="'ali-l-'+l.id"><option :value="l.id" x-text="l.name"></option></template>
+            </select>
+            <button @click="runAliSearch(1)" :disabled="aliSearch.loading || !loggedIn" class="bg-accent hover:bg-accent-dark text-ink-900 font-bold text-sm px-4 py-2 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition"><i class="fa-solid mr-1.5" :class="aliSearch.loading ? 'fa-spinner fa-spin' : 'fa-magnifying-glass'"></i>Rechercher</button>
+          </div>
+          <p x-show="aliSearch.error" class="text-xs text-rose-500" x-text="aliSearch.error"></p>
+          <p x-show="aliSearch.notice" class="text-xs text-accent-dark bg-accent-light rounded-lg px-3 py-2" x-text="aliSearch.notice"></p>
+
+          <div x-show="!loggedIn" class="border border-dashed border-gray-200 rounded-xl p-8 text-center">
+            <i class="fa-solid fa-lock text-2xl text-gray-300 mb-2 block"></i>
+            <p class="text-sm font-semibold text-ink-900 mb-1">Connecte-toi pour rechercher sur AliExpress</p>
+            <p class="text-xs text-gray-500">Les appels passent par le backend EtsyDrop (aucune clé dans le navigateur).</p>
+          </div>
+          <div x-show="loggedIn && !aliSearch.loading && !aliSearch.results.length && !aliSearch.searched" class="border border-dashed border-gray-200 rounded-xl p-8 text-center">
+            <i class="fa-solid fa-magnifying-glass text-2xl text-gray-300 mb-2 block"></i>
+            <p class="text-sm font-semibold text-ink-900 mb-1">Trouve ton fournisseur</p>
+            <p class="text-xs text-gray-500">Tape un produit en anglais pour comparer les prix d'achat AliExpress à tes prix Etsy.</p>
+          </div>
+          <div x-show="loggedIn && !aliSearch.loading && !aliSearch.results.length && aliSearch.searched" class="border border-dashed border-gray-200 rounded-xl p-8 text-center">
+            <i class="fa-solid fa-box-open text-2xl text-gray-300 mb-2 block"></i>
+            <p class="text-sm font-semibold text-ink-900 mb-1">Aucun résultat</p>
+            <p class="text-xs text-gray-500">Essaie des mots plus génériques en anglais.</p>
+          </div>
+          <div x-show="aliSearch.loading" class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-5 gap-3">
+            <template x-for="i in 5" :key="'ali-sk-'+i"><div class="skeleton h-56 rounded-xl"></div></template>
+          </div>
+
+          <template x-if="aliSearch.results.length && !aliSearch.loading">
+            <div class="space-y-3 fade-enter">
+              <p class="text-xs text-gray-500"><span class="num" x-text="aliSearch.total != null ? aliSearch.total.toLocaleString('fr-FR') : aliSearch.results.length"></span> résultat(s) pour « <span class="font-semibold text-ink-900" x-text="aliSearch.lastQuery"></span> » · page <span class="num" x-text="aliSearch.page"></span><span x-show="aliSearch.cached"> · cache</span></p>
+              <div class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-5 gap-3">
+                <template x-for="p in aliSearch.results" :key="p.product_id">
+                  <div class="border border-gray-100 rounded-xl overflow-hidden card-hover transition flex flex-col bg-white">
+                    <button @click="openAliProduct(p)" class="block aspect-square bg-gray-100 overflow-hidden">
+                      <img x-show="p.image_url" :src="p.image_url" :alt="p.title" loading="lazy" class="w-full h-full object-cover">
+                    </button>
+                    <div class="p-3 flex flex-col gap-1.5 flex-1">
+                      <button @click="openAliProduct(p)" class="text-xs font-medium text-ink-900 text-left leading-snug line-clamp-2 hover:text-accent transition" :title="p.title" x-text="p.title"></button>
+                      <div class="flex items-baseline gap-1.5">
+                        <span class="text-base font-extrabold text-ink-900 num" x-text="p.price_usd != null ? '$' + p.price_usd.toFixed(2) : '—'"></span>
+                        <span class="text-[11px] text-gray-400 num" x-text="p.price_usd != null ? '≈ ' + fmtEur(usdToEur(p.price_usd)) : ''"></span>
+                      </div>
+                      <div class="flex items-center gap-2 text-[11px] text-gray-500">
+                        <span x-show="p.rating != null"><i class="fa-solid fa-star text-amber-500"></i> <span class="num" x-text="p.rating"></span></span>
+                        <span x-show="p.orders_count != null" class="num" x-text="p.orders_count.toLocaleString('fr-FR') + ' vendus'"></span>
+                      </div>
+                      <button @click="importAliProduct(p)" :disabled="aliImporting === p.product_id" class="mt-auto w-full text-xs font-bold px-3 py-1.5 rounded-lg transition disabled:opacity-40" :class="aliImported[p.product_id] ? 'bg-accent-light text-accent-dark' : 'bg-ink-900 text-white hover:bg-ink-700'">
+                        <i class="fa-solid mr-1" :class="aliImporting === p.product_id ? 'fa-spinner fa-spin' : (aliImported[p.product_id] ? 'fa-check' : 'fa-download')"></i><span x-text="aliImported[p.product_id] ? 'Importé' : 'Importer'"></span>
+                      </button>
+                    </div>
+                  </div>
+                </template>
+              </div>
+              <div class="flex items-center justify-between">
+                <button @click="runAliSearch(aliSearch.page - 1)" :disabled="aliSearch.page <= 1 || aliSearch.loading" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 disabled:opacity-40 transition"><i class="fa-solid fa-chevron-left mr-1"></i>Précédent</button>
+                <button @click="runAliSearch(aliSearch.page + 1)" :disabled="aliSearch.loading || aliSearch.results.length < aliSearch.limit" class="text-xs font-semibold px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 disabled:opacity-40 transition">Suivant<i class="fa-solid fa-chevron-right ml-1"></i></button>
+              </div>
+              <ul x-show="aliSearch.warnings.length" class="space-y-0.5"><template x-for="w in aliSearch.warnings" :key="w"><li class="text-[11px] text-gray-400 flex gap-1.5"><i class="fa-solid fa-circle-info mt-0.5"></i><span x-text="w"></span></li></template></ul>
+            </div>
+          </template>
+        </div>
+
+        <!-- Modal détail produit AliExpress -->
+        <template x-if="aliDetail">
+          <div @click="aliDetail = null" @keydown.escape.window="aliDetail = null" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+            <div @click.stop class="bg-white rounded-2xl w-full max-w-3xl max-h-[92vh] overflow-y-auto scrollbar-thin fade-enter">
+              <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100 sticky top-0 bg-white z-10 gap-3">
+                <h2 class="font-bold text-base text-ink-900 leading-snug" x-text="aliDetail.title"></h2>
+                <button @click="aliDetail = null" class="w-9 h-9 flex-shrink-0 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-500"><i class="fa-solid fa-xmark"></i></button>
+              </div>
+              <div class="p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div class="rounded-xl bg-gray-100 overflow-hidden aspect-square"><img x-show="aliDetail.image_url" :src="aliDetail.image_url" :alt="aliDetail.title" class="w-full h-full object-cover"></div>
+                <div class="space-y-4">
+                  <div x-show="aliDetail.loading" class="space-y-2"><div class="skeleton h-6 rounded-lg"></div><div class="skeleton h-20 rounded-lg"></div></div>
+                  <div class="flex items-baseline gap-2">
+                    <span class="text-3xl font-extrabold text-ink-900 num" x-text="aliDetail.price_usd != null ? '$' + aliDetail.price_usd.toFixed(2) : '—'"></span>
+                    <span class="text-sm text-gray-400 num" x-text="aliDetail.price_usd != null ? '≈ ' + fmtEur(usdToEur(aliDetail.price_usd)) : ''"></span>
+                    <span x-show="aliDetail.original_price_usd && aliDetail.original_price_usd > (aliDetail.price_usd || 0)" class="text-xs text-gray-400 line-through num" x-text="aliDetail.original_price_usd ? '$' + aliDetail.original_price_usd.toFixed(2) : ''"></span>
+                  </div>
+                  <div class="flex items-center gap-3 text-xs text-gray-500">
+                    <span x-show="aliDetail.rating != null"><i class="fa-solid fa-star text-amber-500"></i> <span class="num" x-text="aliDetail.rating"></span> / 5</span>
+                    <span x-show="aliDetail.orders_count != null" class="num" x-text="aliDetail.orders_count.toLocaleString('fr-FR') + ' vendus'"></span>
+                    <span x-show="aliDetail.store_name" x-text="aliDetail.store_name"></span>
+                  </div>
+                  <div x-show="aliDetail.variants && aliDetail.variants.length">
+                    <p class="text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Variantes</p>
+                    <div class="flex flex-wrap gap-1.5"><template x-for="v in (aliDetail.variants || [])" :key="v.label"><span class="tag-pill bg-gray-100 text-gray-700" x-text="v.label + (v.price_usd != null ? ' · $' + v.price_usd.toFixed(2) : '')"></span></template></div>
+                  </div>
+                  <div x-show="aliDetail.quantity_prices && aliDetail.quantity_prices.length > 1">
+                    <p class="text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Prix par quantité</p>
+                    <div class="flex flex-wrap gap-1.5"><template x-for="q in (aliDetail.quantity_prices || [])" :key="q.min_quantity"><span class="tag-pill bg-gray-100 text-gray-700 num" x-text="'≥ ' + q.min_quantity + ' : $' + q.price_usd.toFixed(2)"></span></template></div>
+                  </div>
+                  <div x-show="aliDetail.shipping && aliDetail.shipping.length">
+                    <p class="text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Délai de livraison estimé</p>
+                    <table class="w-full text-xs"><tbody class="divide-y divide-gray-50">
+                      <template x-for="s in (aliDetail.shipping || [])" :key="s.country_code">
+                        <tr><td class="py-1.5 font-medium" x-text="s.country_code"></td><td class="text-gray-500" x-text="s.method || '—'"></td><td class="text-right num" x-text="s.delivery_days_min != null ? s.delivery_days_min + '-' + s.delivery_days_max + ' j' : '—'"></td><td class="text-right num" x-text="s.cost_usd != null ? '$' + s.cost_usd.toFixed(2) : ''"></td></tr>
+                      </template>
+                    </tbody></table>
+                  </div>
+                  <ul x-show="aliDetail.warnings && aliDetail.warnings.length" class="space-y-0.5"><template x-for="w in (aliDetail.warnings || [])" :key="'adw-'+w"><li class="text-[11px] text-gray-400 flex gap-1.5"><i class="fa-solid fa-circle-info mt-0.5"></i><span x-text="w"></span></li></template></ul>
+                  <p x-show="aliSearch.error" class="text-xs text-rose-500 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2" x-text="aliSearch.error"></p>
+                  <p x-show="aliSearch.notice" class="text-xs text-accent-dark bg-accent-light rounded-lg px-3 py-2" x-text="aliSearch.notice"></p>
+                  <div class="flex gap-2 flex-wrap pt-2">
+                    <button @click="importAliProduct(aliDetail)" :disabled="aliImporting === aliDetail.product_id" class="text-xs font-bold px-4 py-2 rounded-lg transition disabled:opacity-40" :class="aliImported[aliDetail.product_id] ? 'bg-accent-light text-accent-dark' : 'bg-accent text-ink-900 hover:bg-accent-dark'"><i class="fa-solid mr-1.5" :class="aliImporting === aliDetail.product_id ? 'fa-spinner fa-spin' : (aliImported[aliDetail.product_id] ? 'fa-check' : 'fa-download')"></i><span x-text="aliImported[aliDetail.product_id] ? 'Importé dans mon catalogue fournisseur' : 'Importer'"></span></button>
+                    <a :href="aliDetail.url" target="_blank" rel="noopener noreferrer" class="text-xs font-semibold px-4 py-2 rounded-lg border border-gray-200 hover:bg-gray-50 transition"><i class="fa-solid fa-arrow-up-right-from-square mr-1.5"></i>Voir sur AliExpress</a>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </template>
+
         <!-- === PHASE 2 — MES FOURNISSEURS (table suppliers, /api/suppliers) === -->
-        <div class="bg-white rounded-xl border border-gray-200 shadow-card">
+        <div x-show="sourcingTab === 'suppliers'" class="bg-white rounded-xl border border-gray-200 shadow-card">
           <div class="flex items-center justify-between p-5 pb-0 flex-wrap gap-3">
             <div>
               <h3 class="font-bold text-sm text-ink-900">Mes fournisseurs</h3>
@@ -2491,6 +2640,13 @@
                 <template x-for="pr in shippingProfiles" :key="'pp-'+pr.id"><option :value="pr.id" x-text="pr.name"></option></template>
               </select>
             </div>
+            <!-- Produit fournisseur lié à la fiche (AliExpress/Eprolo/manuel) : coût d'achat réel -->
+            <template x-if="pricingLinkedProduct()">
+              <div class="col-span-2 lg:col-span-6 flex items-center justify-between flex-wrap gap-2 rounded-lg border border-accent/30 bg-accent-light/60 px-3 py-2">
+                <p class="text-xs text-accent-dark"><i class="fa-solid fa-link mr-1"></i>Coût fournisseur lié (<span x-text="pricingLinkedProduct().source === 'aliexpress' ? 'AliExpress' : (pricingLinkedProduct().source || 'manuel')"></span>) : <span class="font-bold num" x-text="fmtLocal(pricingLinkedProduct().base_price, pricingLinkedProduct().currency)"></span><span x-show="pricingLinkedProduct().currency !== 'EUR'" class="num" x-text="' ≈ ' + fmtEur(linkedCostEur(pricingLinkedProduct()))"></span><span x-show="pricingLinkedProduct().shipping_days_estimate" x-text="' · ~' + pricingLinkedProduct().shipping_days_estimate + ' j de livraison'"></span></p>
+                <button @click="pricingForm.cost_price = linkedCostEur(pricingLinkedProduct())" class="text-[11px] font-semibold px-2.5 py-1 rounded-lg bg-white border border-gray-200 hover:bg-gray-50 transition">Utiliser ce coût</button>
+              </div>
+            </template>
             <div class="col-span-2 lg:col-span-4 flex items-center gap-5 flex-wrap">
               <label class="flex items-center gap-2 text-xs font-semibold text-gray-600 cursor-pointer select-none"><input type="checkbox" x-model="pricingForm.free_shipping" class="accent-accent w-4 h-4">Livraison gratuite (port inclus dans le prix)</label>
               <label class="flex items-center gap-2 text-xs font-semibold text-gray-600 cursor-pointer select-none"><input type="checkbox" x-model="pricingForm.vat_applicable" class="accent-accent w-4 h-4">TVA applicable <span class="font-normal text-gray-400">(décoche si franchise en base)</span></label>
@@ -2548,7 +2704,7 @@
                         <td><span class="num" x-text="fmtEur(r.vat_eur)"></span><span class="block text-[10px] text-gray-400 leading-tight" x-text="r.vat_label"></span></td>
                         <td class="font-semibold num" x-text="fmtEur(r.seller_net_eur)"></td>
                         <td><span class="tag-pill" :class="marginStatusPill(r.reachable ? r.status : 'bad')" x-text="r.reachable ? fmtEur(r.margin_eur) + ' · ' + fmtPct(r.margin_pct) : 'Inatteignable'"></span></td>
-                        <td class="num" :class="marginStatusClass(typeof r.current_margin_pct === 'number' ? (r.current_margin_pct >= pricingAnalysis.target_margin_pct ? 'good' : (r.current_margin_pct >= pricingAnalysis.target_margin_pct - 10 ? 'close' : 'bad')) : 'unknown')" x-text="typeof r.current_margin_pct === 'number' ? fmtPct(r.current_margin_pct) : '—'"></td>
+                        <td class="num font-semibold" :class="marginStatusClass(typeof r.current_margin_pct === 'number' ? (r.current_margin_pct < 0 ? 'bad' : (r.current_margin_pct >= pricingAnalysis.target_margin_pct ? 'good' : (r.current_margin_pct >= pricingAnalysis.target_margin_pct - 10 ? 'close' : 'bad'))) : 'unknown')" x-text="typeof r.current_margin_pct === 'number' ? (fmtPct(r.current_margin_pct) + (typeof r.current_margin_eur === 'number' ? ' · ' + fmtEur(r.current_margin_eur) : '')) : '—'"></td>
                         <td class="text-gray-500" x-text="r.delivery_days_min != null ? r.delivery_days_min + '-' + r.delivery_days_max + ' j' : '—'"></td>
                       </tr>
                     </template>
@@ -2793,9 +2949,52 @@
               <i class="fa-solid fa-rotate mr-1.5" :class="{ 'fa-spin': etsyResyncing }"></i>
               <span x-text="etsyResyncing ? 'Synchronisation…' : 'Resynchroniser fiches & commandes'"></span>
             </button>
+            <!-- Diagnostic : GET /api/auth/etsy/debug — explique un synced=0 (token, shop_id, API publique, OAuth) -->
+            <button x-show="loggedIn" @click="runEtsyDebug()" :disabled="etsyDebug.loading"
+                    class="border border-gray-200 hover:bg-gray-50 disabled:opacity-40 text-gray-600 font-semibold text-sm px-4 py-2 rounded-lg transition">
+              <i class="fa-solid mr-1.5" :class="etsyDebug.loading ? 'fa-spinner fa-spin' : 'fa-stethoscope'"></i>Diagnostiquer connexion Etsy
+            </button>
             <button x-show="currentUserEmail" @click="edLogout()" class="text-xs text-gray-400 hover:text-gray-600 underline">Se déconnecter d'EtsyDrop</button>
           </div>
         </div>
+
+        <!-- Modal diagnostic Etsy -->
+        <template x-if="etsyDebug.open">
+          <div @click="etsyDebug.open = false" @keydown.escape.window="etsyDebug.open = false" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+            <div @click.stop class="bg-white rounded-2xl w-full max-w-lg max-h-[92vh] overflow-y-auto scrollbar-thin fade-enter">
+              <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100 sticky top-0 bg-white z-10">
+                <h2 class="font-bold text-lg text-ink-900">Diagnostic connexion Etsy</h2>
+                <button @click="etsyDebug.open = false" class="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-500"><i class="fa-solid fa-xmark"></i></button>
+              </div>
+              <div class="p-6 space-y-4">
+                <p x-show="etsyDebug.error" class="text-xs text-rose-500 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2" x-text="etsyDebug.error"></p>
+                <template x-if="etsyDebug.data">
+                  <div class="space-y-4">
+                    <div class="flex items-center gap-2">
+                      <span class="tag-pill" :class="etsyDebug.data.problems.length ? 'bg-rose-100 text-rose-600' : 'bg-accent-light text-accent-dark'"><i class="fa-solid" :class="etsyDebug.data.problems.length ? 'fa-triangle-exclamation' : 'fa-circle-check'"></i> <span x-text="etsyDebug.data.problems.length ? etsyDebug.data.problems.length + ' problème(s)' : 'Tout est OK'"></span></span>
+                    </div>
+                    <div class="divide-y divide-gray-50 text-sm">
+                      <template x-for="row in etsyDebugRows()" :key="row.label">
+                        <div class="flex items-center justify-between py-2 gap-3">
+                          <span class="text-gray-500 text-xs" x-text="row.label"></span>
+                          <span class="font-semibold text-right num" :class="row.ok === true ? 'text-accent-dark' : (row.ok === false ? 'text-rose-500' : 'text-ink-900')" x-text="row.value"></span>
+                        </div>
+                      </template>
+                    </div>
+                    <div x-show="etsyDebug.data.problems.length">
+                      <p class="text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Problèmes détectés</p>
+                      <ul class="space-y-1"><template x-for="p in etsyDebug.data.problems" :key="p"><li class="text-xs text-rose-600 flex gap-2"><i class="fa-solid fa-circle-xmark mt-0.5"></i><span x-text="p"></span></li></template></ul>
+                    </div>
+                    <div class="flex justify-end gap-2 pt-2">
+                      <button @click="runEtsyDebug()" :disabled="etsyDebug.loading" class="text-xs font-semibold px-4 py-2 rounded-lg border border-gray-200 hover:bg-gray-50 disabled:opacity-40 transition"><i class="fa-solid fa-rotate mr-1" :class="etsyDebug.loading && 'fa-spin'"></i>Relancer</button>
+                      <button x-show="etsyConnected" @click="etsyDebug.open = false; edResyncEtsy()" class="text-xs font-bold px-4 py-2 rounded-lg bg-accent text-ink-900 hover:bg-accent-dark transition"><i class="fa-solid fa-rotate mr-1"></i>Resynchroniser</button>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </div>
+        </template>
 
         <div class="bg-white rounded-xl border border-gray-200 shadow-card p-5">
           <h3 class="font-bold text-sm text-ink-900 mb-4">Intégrations connectées</h3>
@@ -4298,6 +4497,121 @@ function app() {
     },
     testLineClass(kind) {
       return kind === 'buyer' ? 'text-ink-900 font-semibold' : (kind === 'net' ? 'text-accent-dark font-bold' : 'text-rose-500');
+    },
+
+    // =====================================================================
+    // ===== SOURCING ALIEXPRESS (page Sourcing > onglet AliExpress) =====
+    // =====================================================================
+    sourcingTab: 'suppliers',
+    // Taux USD→EUR aligné sur etsy_fees.COUNTRIES["US"].rate (1 € = 1,08 $).
+    usdToEur(usd) { return (typeof usd === 'number' && !isNaN(usd)) ? usd / 1.08 : null; },
+    aliSearch: { query: 'name necklace', listing_id: '', page: 1, limit: 20, total: null, results: [], warnings: [], source: null, cached: false, loading: false, error: '', notice: '', searched: false, lastQuery: '' },
+    aliDetail: null,
+    aliImporting: null,
+    aliImported: {},
+    async runAliSearch(page) {
+      const s = this.aliSearch;
+      if (s.loading) return;
+      if (!this.loggedIn) { s.error = 'Connecte-toi pour rechercher sur AliExpress.'; return; }
+      const q = (s.query || '').trim();
+      if (q.length < 2) { s.error = 'Saisis au moins 2 caractères.'; return; }
+      s.loading = true; s.error = ''; s.notice = '';
+      try {
+        const r = await window.EDAPI.aliexpressSearch(q, Math.max(1, page || 1), s.limit);
+        s.results = r.results || []; s.total = r.total; s.page = r.page; s.warnings = r.warnings || []; s.source = r.source; s.cached = !!r.cached; s.lastQuery = r.query; s.searched = true;
+      } catch (e) {
+        s.error = e.message || 'Recherche impossible.';
+      } finally {
+        s.loading = false;
+      }
+    },
+    async openAliProduct(p) {
+      // Affiche immédiatement ce que la recherche connaît, puis complète avec /product/{id}.
+      this.aliDetail = Object.assign({ loading: true, variants: [], quantity_prices: [], shipping: [], warnings: [] }, p);
+      try {
+        const d = await window.EDAPI.aliexpressProduct(p.product_id);
+        if (this.aliDetail && this.aliDetail.product_id === p.product_id) this.aliDetail = Object.assign({ loading: false }, d);
+      } catch (e) {
+        if (this.aliDetail) { this.aliDetail.loading = false; this.aliDetail.warnings = [(e.message || 'Détail indisponible.')]; }
+      }
+    },
+    async importAliProduct(p) {
+      if (!p || this.aliImporting) return;
+      this.aliImporting = p.product_id; this.aliSearch.error = ''; this.aliSearch.notice = '';
+      const payload = { product_id: p.product_id };
+      if (this.aliSearch.listing_id) payload.listing_id = this.aliSearch.listing_id;
+      try {
+        const r = await window.EDAPI.aliexpressImport(payload);
+        this.aliImported[p.product_id] = true;
+        const linked = r.linked_etsy_listing_id ? ' et lié à la fiche « ' + (this.listingNameForEtsyId(r.linked_etsy_listing_id) || r.linked_etsy_listing_id) + ' »' : '';
+        this.aliSearch.notice = (r.updated ? 'Produit mis à jour' : 'Produit importé') + ' dans ton fournisseur AliExpress' + linked + '.';
+        this.loadSuppliers();
+        this.loadLinkedSupplierProducts();
+      } catch (e) {
+        this.aliSearch.error = 'Import impossible : ' + (e.message || 'erreur inconnue');
+      } finally {
+        this.aliImporting = null;
+      }
+    },
+
+    // =====================================================================
+    // ===== PRODUITS FOURNISSEUR LIÉS (coût d'achat réel par fiche Etsy) =====
+    // =====================================================================
+    linkedSupplierProducts: [],
+    async loadLinkedSupplierProducts() {
+      if (!this.loggedIn) return;
+      try {
+        const list = await window.EDAPI.linkedSupplierProducts();
+        this.linkedSupplierProducts = Array.isArray(list) ? list : [];
+      } catch (e) {
+        console.warn('[EtsyDrop] produits liés indisponibles :', e.message);
+      }
+    },
+    linkedProductForEtsyId(etsyListingId) {
+      if (!etsyListingId) return null;
+      return this.linkedSupplierProducts.find(p => String(p.linked_etsy_listing_id) === String(etsyListingId)) || null;
+    },
+    linkedCostEur(sp) {
+      if (!sp || typeof sp.base_price !== 'number') return 0;
+      const eur = sp.currency === 'USD' ? this.usdToEur(sp.base_price) : sp.base_price;
+      return Math.round((eur || 0) * 100) / 100;
+    },
+    pricingLinkedProduct() {
+      const l = this.pricingSelectedListing();
+      return l ? this.linkedProductForEtsyId(l.etsyListingId) : null;
+    },
+
+    // =====================================================================
+    // ===== DIAGNOSTIC CONNEXION ETSY (Paramètres) =====
+    // =====================================================================
+    etsyDebug: { open: false, loading: false, data: null, error: '' },
+    async runEtsyDebug() {
+      const d = this.etsyDebug;
+      d.open = true; d.loading = true; d.error = '';
+      try {
+        d.data = await window.EDAPI.etsyDebug();
+      } catch (e) {
+        d.error = e.message || 'Diagnostic impossible.';
+      } finally {
+        d.loading = false;
+      }
+    },
+    etsyDebugRows() {
+      const x = this.etsyDebug.data;
+      if (!x) return [];
+      const exp = x.expires_at ? new Date(x.expires_at) : null;
+      const remaining = typeof x.seconds_remaining === 'number' ? x.seconds_remaining : null;
+      return [
+        { label: 'Boutique connectée', value: x.connected ? 'Oui' : 'Non', ok: x.connected },
+        { label: 'shop_id', value: x.shop_id ? String(x.shop_id) + (x.shop_name ? ' (' + x.shop_name + ')' : '') : 'absent', ok: !!x.shop_id },
+        { label: 'Token OAuth en base', value: x.has_access_token ? (x.has_refresh_token ? 'access + refresh' : 'access seul') : 'aucun', ok: x.has_access_token && x.has_refresh_token },
+        { label: 'Token valide', value: x.token_valid ? ('Oui' + (remaining != null ? ' (' + Math.max(0, Math.round(remaining / 60)) + ' min restantes)' : '')) : 'Expiré / absent', ok: x.token_valid },
+        { label: 'Expire le', value: exp && !isNaN(exp) ? exp.toLocaleString('fr-FR') : '—', ok: null },
+        { label: 'API publique Etsy (clé d\'app)', value: x.public_api_ok ? 'OK' + (x.etsy_active_listings != null ? ' · ' + x.etsy_active_listings + ' fiche(s) active(s)' : '') : 'Échec', ok: x.public_api_ok },
+        { label: 'Sonde OAuth (appel authentifié)', value: x.oauth_probe_ok === null || x.oauth_probe_ok === undefined ? 'non testée' : (x.oauth_probe_ok ? 'OK' : 'Échec'), ok: x.oauth_probe_ok === null || x.oauth_probe_ok === undefined ? null : x.oauth_probe_ok },
+        { label: 'Fiches en base', value: String(x.listings_in_db), ok: x.listings_in_db > 0 ? true : null },
+        { label: 'Commandes en base', value: String(x.orders_in_db), ok: null }
+      ];
     },
 
     init() {

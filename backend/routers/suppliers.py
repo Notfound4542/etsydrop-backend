@@ -262,6 +262,26 @@ async def update_conversation(
 
 # === LIER UN PRODUIT FOURNISSEUR À UNE FICHE ETSY ===
 # Déclaré avant /{supplier_id}/products pour la même raison de routage.
+@router.get("/products/linked", response_model=List[SupplierProduct])
+async def list_linked_products(user: CurrentUser = Depends(get_current_user)):
+    """
+    Tous les produits fournisseur (tous fournisseurs, y compris AliExpress) liés
+    à une fiche Etsy. Le frontend indexe par linked_etsy_listing_id pour
+    afficher le coût d'achat réel dans « Coûts & Expédition » et le modal
+    catalogue.
+    """
+    supabase = get_supabase()
+    result = (
+        supabase.table("supplier_products")
+        .select("*")
+        .eq("user_id", user.id)
+        .not_.is_("linked_etsy_listing_id", "null")
+        .order("created_at", desc=True)
+        .execute()
+    )
+    return result.data or []
+
+
 @router.patch("/products/{product_id}/link", response_model=SupplierProduct)
 async def link_product(product_id: str, payload: SupplierProductLink, user: CurrentUser = Depends(get_current_user)):
     supabase = get_supabase()

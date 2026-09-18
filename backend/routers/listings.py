@@ -11,7 +11,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from database import get_current_user, get_supabase
-from etsy_client import get_etsy_access_token, get_etsy_shop_id, sync_etsy_listings
+from etsy_client import sync_etsy_listings, try_get_etsy_access_token
 from models import CurrentUser, Listing, ListingCreate, ListingPricingUpdate, SyncResult
 
 router = APIRouter()
@@ -21,14 +21,32 @@ router = APIRouter()
 @router.post("/sync", response_model=SyncResult)
 async def sync_listings(user: CurrentUser = Depends(get_current_user)):
     """
-    Redéclenche l'import des fiches actives (titre, tags, image principale,
-    variantes/inventaire) depuis la boutique Etsy connectée, sans repasser
-    par tout le flow OAuth. Le token est rafraîchi automatiquement s'il a
-    expiré (voir etsy_client.py > get_etsy_access_token).
+    Redéclenche l'import des fiches actives depuis la boutique Etsy connectée.
+
+    Ordre volontaire (fix « synced:0, received:0 ») :
+      1. fiches actives + images lues avec la CLÉ D'APP SEULE (fetch_public) —
+         aucune dépendance au token OAuth ;
+      2. token OAuth récupéré en « best effort » (refresh préventif) — il ne
+         sert qu'aux variantes (/inventory) ; s'il est expiré/révoqué, la sync
+         continue et la raison est renvoyée dans `errors` au lieu d'un 401 ;
+      3. toute cause de compteur à 0 (aucune fiche active, erreur API, rate
+         limit, écriture DB) est loggée ET renvoyée dans `errors` pour être
+         lisible depuis le frontend (bouton « Diagnostiquer » des Paramètres).
     """
-    access_token = await get_etsy_access_token(user.id)
-    shop_id = get_etsy_shop_id(user.id)
+    row = (
+        get_supabase()
+        .table("etsy_tokens")
+        .select("shop_id")
+        .eq("user_id", user.id)
+        .maybe_single()
+        .execute()
+    )
+    shop_id = row.data.get("shop_id") if (row and row.data) else None
+
+    access_token, oauth_reason = await try_get_etsy_access_token(user.id)
     result = await sync_etsy_listings(user.id, access_token, shop_id)
+    if oauth_reason:
+        result["errors"] = [oauth_reason] + [e for e in result.get("errors", []) if "Token OAuth absent" not in e]
     return {**result, "shop_id": shop_id}
 
 

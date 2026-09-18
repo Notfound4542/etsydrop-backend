@@ -126,6 +126,38 @@ async def get_etsy_access_token(user_id: str) -> str:
     return row["access_token"]
 
 
+# === TOKEN OAUTH « BEST EFFORT » (jamais d'exception) ===
+# Pour les chemins où OAuth est un BONUS et pas un prérequis (sync des
+# fiches : listings/active et /images sont publics, seul /inventory exige le
+# token). Retourne (token_ou_None, raison_lisible_ou_None) — la raison est
+# renvoyée au frontend dans SyncResult.errors pour qu'un synced=0 ne soit plus
+# jamais silencieux.
+async def try_get_etsy_access_token(user_id: str) -> tuple:
+    try:
+        return await get_etsy_access_token(user_id), None
+    except HTTPException as exc:
+        reason = f"OAuth Etsy indisponible ({exc.detail}) — reconnexion Etsy requise pour les variantes et les commandes."
+        logger.warning("try_get_etsy_access_token user_id=%s : %s", user_id, exc.detail)
+        return None, reason
+    except Exception as exc:  # noqa: BLE001 — jamais bloquant
+        logger.warning("try_get_etsy_access_token user_id=%s : %s: %s", user_id, type(exc).__name__, exc)
+        return None, "OAuth Etsy indisponible (erreur interne) — reconnexion Etsy requise pour les variantes et les commandes."
+
+
+# === LECTURE PUBLIQUE (x-api-key SEULEMENT, jamais de token OAuth) ===
+# Endpoints Etsy v3 qui n'exigent PAS d'OAuth (vérifié en direct le
+# 2026-09-18 sur shop_id 67891193) :
+#   - GET /shops/{shop_id}/listings/active
+#   - GET /listings/{listing_id}/images
+#   - GET /shops?shop_name=...
+# En revanche GET /listings/{id}/inventory renvoie 401 « requires scope
+# listings_r » en app-only : il reste sur etsy_get(access_token=...).
+# Isoler ces lectures garantit que la sync du catalogue ne dépend plus de
+# l'état du token OAuth (cause historique de {synced:0, received:0}).
+async def fetch_public(endpoint: str, *, params: Optional[dict] = None) -> Any:
+    return await etsy_get(endpoint, params=params, access_token=None)
+
+
 # === ID ETSY DU VENDEUR ===
 # Un access token Etsy v3 est de la forme "{user_id}.{secret}" : le
 # préfixe avant le point est l'ID utilisateur Etsy du propriétaire.
@@ -165,7 +197,7 @@ def get_etsy_shop_id(user_id: str) -> int:
 # catalogue (url_fullxfull peut peser plusieurs Mo).
 async def fetch_listing_image_url(listing_id: str) -> Optional[str]:
     try:
-        payload = await etsy_get(f"/listings/{listing_id}/images")
+        payload = await fetch_public(f"/listings/{listing_id}/images")
         results = payload.get("results", []) if isinstance(payload, dict) else []
         if not results:
             return None
@@ -188,7 +220,12 @@ async def fetch_listing_image_url(listing_id: str) -> Optional[str]:
 # Contrairement à /images, /inventory EXIGE le token OAuth du vendeur
 # (scope listings_r) : en app-only Etsy renvoie 401 — vérifié en direct,
 # c'est pour ça que toutes les fiches importées avaient variants=[].
-async def fetch_listing_variants(listing_id: str, access_token: str) -> list:
+async def fetch_listing_variants(listing_id: str, access_token: Optional[str]) -> list:
+    # Sans token OAuth valide (expiré + refresh échoué) on ne tente même pas
+    # l'appel : Etsy répondrait 401 et la fiche serait importée sans variantes
+    # de toute façon — voir sync_etsy_listings (errors[]).
+    if not access_token:
+        return []
     try:
         payload = await etsy_get(f"/listings/{listing_id}/inventory", access_token=access_token)
     except Exception as exc:
@@ -235,7 +272,7 @@ async def fetch_listing_variants(listing_id: str, access_token: str) -> list:
 # callback OAuth) et routers/listings.py > POST /sync (déclenchement manuel,
 # nécessaire quand shop_id/le token ont été mis à jour autrement qu'en
 # repassant par tout le flow OAuth — ex. un correctif SQL direct en base).
-async def sync_etsy_listings(user_id: str, access_token: str, shop_id: Optional[int]) -> dict:
+async def sync_etsy_listings(user_id: str, access_token: Optional[str], shop_id: Optional[int]) -> dict:
     """
     Importe les fiches actives de la boutique Etsy connectée dans la table
     `listings`. Upsert sur (user_id, etsy_listing_id) — voir l'index unique
@@ -244,26 +281,47 @@ async def sync_etsy_listings(user_id: str, access_token: str, shop_id: Optional[
     de les dupliquer. `synced` compte toutes les fiches écrites (INSERT et
     UPDATE confondus), pas seulement les nouvelles.
 
-    Retourne {synced, received, with_image, with_variants}. Ne lève jamais :
-    appelée aussi bien depuis le callback OAuth (qui ne doit jamais planter
-    pour un souci de sync) que depuis un endpoint manuel (qui, lui, doit
-    pouvoir remonter un compte de 0 sans crasher).
+    Retourne {synced, received, with_image, with_variants, oauth_used, errors}.
+    Ne lève jamais : appelée aussi bien depuis le callback OAuth (qui ne doit
+    jamais planter pour un souci de sync) que depuis un endpoint manuel (qui,
+    lui, doit pouvoir remonter un compte de 0 sans crasher).
+
+    `access_token` est OPTIONNEL : la liste des fiches actives et les images
+    sont lues avec la clé d'app seule (fetch_public) ; le token ne sert qu'aux
+    variantes (/inventory). Un token expiré/None n'empêche donc plus l'import
+    du catalogue. `errors` explique en clair chaque compteur à 0 (aucune fiche
+    active ? erreur API ? rate limit ? écriture DB ?) — renvoyé au frontend.
     """
-    empty = {"synced": 0, "received": 0, "with_image": 0, "with_variants": 0}
+    errors: list = []
+    empty = {"synced": 0, "received": 0, "with_image": 0, "with_variants": 0, "oauth_used": bool(access_token), "errors": errors}
     if not shop_id:
         logger.warning("Sync listings Etsy ignorée pour user_id=%s : shop_id non résolu.", user_id)
+        errors.append("shop_id non résolu en base — reconnecte ta boutique en indiquant son nom exact.")
         return empty
+    if not access_token:
+        errors.append("Token OAuth absent ou expiré : fiches et images importées avec la clé d'app, variantes ignorées.")
 
     try:
-        payload = await etsy_get(
-            f"/shops/{shop_id}/listings/active", access_token=access_token, params={"limit": 100}
-        )
+        payload = await fetch_public(f"/shops/{shop_id}/listings/active", params={"limit": 100})
         etsy_listings = payload.get("results", []) if isinstance(payload, dict) else []
+    except HTTPException as exc:
+        logger.warning("Sync listings Etsy échouée pour user_id=%s : HTTP %s %s", user_id, exc.status_code, exc.detail)
+        if exc.status_code == 429:
+            errors.append("Rate limit Etsy atteint sur /listings/active — réessaie dans une minute.")
+        elif exc.status_code == 500:
+            errors.append("ETSY_API_KEY / ETSY_API_SECRET manquants côté serveur.")
+        else:
+            errors.append(f"Etsy a refusé GET /shops/{shop_id}/listings/active ({exc.detail}) — voir les logs serveur.")
+        return empty
     except Exception as exc:
         logger.warning("Sync listings Etsy échouée pour user_id=%s : %s: %s", user_id, type(exc).__name__, exc)
+        errors.append(f"Appel Etsy /listings/active impossible ({type(exc).__name__}).")
         return empty
 
-    logger.info("Sync listings : %d fiche(s) reçue(s) d'Etsy pour shop_id=%s.", len(etsy_listings), shop_id)
+    logger.info("Sync listings : %d fiche(s) reçue(s) d'Etsy pour shop_id=%s (oauth=%s).", len(etsy_listings), shop_id, bool(access_token))
+    if not etsy_listings:
+        errors.append(f"Etsy ne renvoie aucune fiche ACTIVE pour shop_id={shop_id} (fiches en brouillon/inactives, ou mauvais shop_id).")
+        return empty
 
     # Deux appels Etsy supplémentaires par fiche (image + inventaire) : aucun
     # des deux n'est inclus dans /listings/active (confirmé contre le schéma
@@ -340,27 +398,35 @@ async def sync_etsy_listings(user_id: str, access_token: str, shop_id: Optional[
             # volontairement PAS dans ce dict : PostgREST ne touche que les
             # colonnes envoyées lors d'un ON CONFLICT DO UPDATE, donc une
             # resync n'écrase jamais ce que l'utilisateur a renseigné.
-            rows.append(
-                {
-                    "user_id": user_id,
-                    "etsy_listing_id": listing_id,
-                    "name": title,
-                    "description": description,
-                    "tags": tags,
-                    "price_min": round(price_min, 2),
-                    "price_max": round(price_max, 2),
-                    "supplier": "my_catalog",
-                    "variants": variants,
-                    "image_url": image_url,
-                    "stock_status": stock_status,
-                    "margin_pct": 0,
-                }
-            )
+            row = {
+                "user_id": user_id,
+                "etsy_listing_id": listing_id,
+                "name": title,
+                "description": description,
+                "tags": tags,
+                "price_min": round(price_min, 2),
+                "price_max": round(price_max, 2),
+                "supplier": "my_catalog",
+                "image_url": image_url,
+                "stock_status": stock_status,
+                "margin_pct": 0,
+            }
+            # Sans token OAuth, /inventory n'a pas été interrogé : on OMET la
+            # colonne pour que l'ON CONFLICT DO UPDATE de PostgREST conserve
+            # les variantes déjà en base (une resync « clé d'app seule » ne
+            # doit jamais effacer ce qu'une sync OAuth précédente a importé).
+            # À l'INSERT, la colonne prend son DEFAULT '[]'::jsonb.
+            if access_token:
+                row["variants"] = variants
+            rows.append(row)
         except (TypeError, ValueError):
             continue
 
     if not rows:
+        errors.append("Aucune fiche exploitable dans la réponse Etsy (listing_id manquant ou données invalides).")
         return {**empty, "received": len(etsy_listings)}
+    if access_token and with_variants == 0:
+        errors.append("Aucune variante récupérée malgré un token OAuth : scope listings_r manquant ou rate limit sur /inventory.")
 
     try:
         get_supabase().table("listings").upsert(rows, on_conflict="user_id,etsy_listing_id").execute()
@@ -374,13 +440,21 @@ async def sync_etsy_listings(user_id: str, access_token: str, shop_id: Optional[
             user_id, type(exc).__name__, exc,
             exc_info=True,
         )
+        errors.append(f"Écriture en base échouée ({type(exc).__name__}) — index unique (user_id, etsy_listing_id) présent ? Voir logs serveur.")
         return {**empty, "received": len(etsy_listings)}
 
     logger.info(
         "Sync listings terminée pour user_id=%s : %d reçue(s), %d upsertée(s), %d avec image, %d avec variantes.",
         user_id, len(etsy_listings), len(rows), with_image, with_variants,
     )
-    return {"synced": len(rows), "received": len(etsy_listings), "with_image": with_image, "with_variants": with_variants}
+    return {
+        "synced": len(rows),
+        "received": len(etsy_listings),
+        "with_image": with_image,
+        "with_variants": with_variants,
+        "oauth_used": bool(access_token),
+        "errors": errors,
+    }
 
 
 # === STATUT DE COMMANDE (mapping receipt Etsy -> OrderStatus) ===
@@ -557,6 +631,12 @@ async def etsy_get(path: str, *, params: Optional[dict] = None, access_token: Op
         except Exception:
             error_body = "<illisible>"
         logger.warning("Etsy API %s a répondu %s : %s", path, response.status_code, error_body)
+        if response.status_code == 401 and access_token:
+            # Token invalide/expiré malgré le refresh préventif : l'appelant doit
+            # afficher un message actionnable, pas un « échec Etsy » générique.
+            raise HTTPException(status_code=401, detail="Reconnexion Etsy requise (token OAuth expiré ou révoqué).")
+        if response.status_code == 429:
+            raise HTTPException(status_code=429, detail="Rate limit Etsy atteint — réessaie dans une minute.")
         raise HTTPException(status_code=502, detail="Échec de la requête vers l'API Etsy.")
 
     return response.json()

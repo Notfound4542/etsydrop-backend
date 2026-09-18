@@ -140,12 +140,40 @@ class Order(BaseModel):
 
 class SyncResult(BaseModel):
     synced: int = Field(..., ge=0)
-    shop_id: int
+    # None quand shop_id n'est pas résolu en base : la sync renvoie alors
+    # synced=0 avec la raison dans `errors` au lieu d'un 400 opaque.
+    shop_id: Optional[int] = None
     # Détail de la sync des fiches (voir etsy_client.py > sync_etsy_listings) —
     # absents pour la sync des commandes.
     received: Optional[int] = Field(None, ge=0)
     with_image: Optional[int] = Field(None, ge=0)
     with_variants: Optional[int] = Field(None, ge=0)
+    # True si le token OAuth a pu être utilisé (variantes) ; False = import
+    # public seul (clé d'app). Toujours renseigné pour la sync des fiches.
+    oauth_used: Optional[bool] = None
+    # Raisons lisibles de chaque compteur à 0 (jamais de corps Etsy brut).
+    errors: List[str] = Field(default_factory=list)
+
+
+# === DIAGNOSTIC CONNEXION ETSY (GET /api/auth/etsy/debug) ===
+class EtsyDebugStatus(BaseModel):
+    connected: bool
+    shop_id: Optional[int] = None
+    shop_name: Optional[str] = None
+    has_access_token: bool = False
+    has_refresh_token: bool = False
+    # updated_at + expires_in ; None si aucun token.
+    expires_at: Optional[datetime] = None
+    token_valid: bool = False
+    seconds_remaining: Optional[int] = None
+    listings_in_db: int = Field(0, ge=0)
+    orders_in_db: int = Field(0, ge=0)
+    # Lecture publique (clé d'app seule) : nombre de fiches actives côté Etsy.
+    public_api_ok: bool = False
+    etsy_active_listings: Optional[int] = None
+    # Sonde OAuth : GET authentifié (après refresh préventif si nécessaire).
+    oauth_probe_ok: Optional[bool] = None
+    problems: List[str] = Field(default_factory=list)
 
 
 class OrderFulfillRequest(BaseModel):
@@ -508,6 +536,12 @@ class SupplierProductCreate(BaseModel):
 class SupplierProduct(SupplierProductCreate):
     id: str
     supplier_id: str
+    # 'manual' | 'eprolo' | 'aliexpress' (voir migrations/2026-09-18_aliexpress.sql)
+    source: Optional[str] = "manual"
+    external_id: Optional[str] = None
+    shipping_days_estimate: Optional[int] = Field(None, ge=0)
+    rating: Optional[float] = Field(None, ge=0, le=5)
+    orders_count: Optional[int] = Field(None, ge=0)
     created_at: datetime
 
 
@@ -785,3 +819,78 @@ class ProductTestResult(BaseModel):
     lines: List[ProductTestLine] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
     created_at: Optional[datetime] = None
+
+
+# =====================================================================
+# === SOURCING ALIEXPRESS (routers/aliexpress.py) ===
+# =====================================================================
+class AliexpressProduct(BaseModel):
+    product_id: str = Field(..., max_length=40)
+    title: str = Field(..., max_length=300)
+    price_usd: Optional[float] = Field(None, ge=0)
+    original_price_usd: Optional[float] = Field(None, ge=0)
+    image_url: Optional[str] = Field(None, max_length=600)
+    url: str = Field(..., max_length=600)
+    # Texte tel que fourni par AliExpress ("Free shipping", "Livraison: 2,10 €")
+    shipping_to_fr: Optional[str] = Field(None, max_length=120)
+    rating: Optional[float] = Field(None, ge=0, le=5)
+    orders_count: Optional[int] = Field(None, ge=0)
+    store_name: Optional[str] = Field(None, max_length=160)
+
+
+class AliexpressSearchResponse(BaseModel):
+    query: str
+    page: int = Field(1, ge=1)
+    limit: int = Field(20, ge=1, le=50)
+    total: Optional[int] = Field(None, ge=0)
+    # 'affiliate_api' (clés ALIEXPRESS_APP_*) | 'scrape' (repli pages publiques)
+    source: str = Field(..., pattern="^(affiliate_api|scrape)$")
+    cached: bool = False
+    results: List[AliexpressProduct] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+
+
+class AliexpressVariant(BaseModel):
+    sku_id: Optional[str] = Field(None, max_length=60)
+    label: str = Field(..., max_length=200)
+    price_usd: Optional[float] = Field(None, ge=0)
+    stock: Optional[int] = Field(None, ge=0)
+
+
+class AliexpressQuantityPrice(BaseModel):
+    min_quantity: int = Field(..., ge=1)
+    price_usd: float = Field(..., ge=0)
+
+
+class AliexpressShippingOption(BaseModel):
+    country_code: str = Field(..., min_length=2, max_length=2)
+    method: Optional[str] = Field(None, max_length=120)
+    cost_usd: Optional[float] = Field(None, ge=0)
+    delivery_days_min: Optional[int] = Field(None, ge=0)
+    delivery_days_max: Optional[int] = Field(None, ge=0)
+
+
+class AliexpressProductDetail(AliexpressProduct):
+    description: Optional[str] = Field(None, max_length=3000)
+    images: List[str] = Field(default_factory=list, max_length=20)
+    variants: List[AliexpressVariant] = Field(default_factory=list)
+    quantity_prices: List[AliexpressQuantityPrice] = Field(default_factory=list)
+    shipping: List[AliexpressShippingOption] = Field(default_factory=list)
+    source: str = Field(..., pattern="^(affiliate_api|scrape)$")
+    warnings: List[str] = Field(default_factory=list)
+
+
+class AliexpressImportRequest(BaseModel):
+    product_id: str = Field(..., min_length=3, max_length=40, pattern=r"^[0-9]+$")
+    # UUID interne (listings.id) — optionnel : lie le produit à une fiche Etsy.
+    listing_id: Optional[str] = Field(None, min_length=36, max_length=36)
+
+
+class AliexpressImportResponse(BaseModel):
+    supplier_id: str
+    supplier_product_id: str
+    product_id: str
+    linked_etsy_listing_id: Optional[int] = None
+    # True si le produit existait déjà (mise à jour au lieu d'un doublon).
+    updated: bool = False
+    product: SupplierProduct

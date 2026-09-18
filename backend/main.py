@@ -25,6 +25,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from rate_limiter import limiter
 from routers import (
     ads,
+    aliexpress,
     analytics,
     auth,
     billing,
@@ -133,6 +134,8 @@ app.include_router(ads.router, prefix="/api/ads", tags=["ads"])
 app.include_router(suppliers.router, prefix="/api/suppliers", tags=["suppliers"])
 app.include_router(seo.router, prefix="/api/seo", tags=["seo"])
 app.include_router(product_test.router, prefix="/api/product-test", tags=["product-test"])
+# === SOURCING ALIEXPRESS (API Affiliate ou repli pages publiques) ===
+app.include_router(aliexpress.router, prefix="/api/aliexpress", tags=["aliexpress"])
 # Le webhook Stripe (/api/billing/webhook) est exempté du rate limiter global
 # via @limiter.exempt dans routers/billing.py — Stripe retente agressivement
 # et n'a pas à être throttled comme un client public.
