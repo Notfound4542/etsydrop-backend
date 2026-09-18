@@ -560,3 +560,59 @@ async def etsy_get(path: str, *, params: Optional[dict] = None, access_token: Op
         raise HTTPException(status_code=502, detail="Échec de la requête vers l'API Etsy.")
 
     return response.json()
+
+
+# === APPEL ÉCRITURE GÉNÉRIQUE (PATCH / PUT / POST) VERS L'API ETSY V3 ===
+# Utilisé par routers/seo.py (updateListing : titre/tags/description) et
+# routers/pricing.py (updateListing price / updateListingInventory).
+#
+# Deux encodages selon l'endpoint Etsy — confirmé contre la doc officielle :
+#   - updateListing (PATCH /shops/{shop_id}/listings/{listing_id}) attend un
+#     corps application/x-www-form-urlencoded (`data=`), tags séparés par des
+#     virgules. Ce n'est PAS un PUT (la spec Phase 2 parle de PUT, mais Etsy
+#     v3 rejette PUT sur cette route avec 405).
+#   - updateListingInventory (PUT /listings/{listing_id}/inventory) attend un
+#     corps JSON (`json=`).
+# Toujours authentifié (scope listings_w — déjà demandé dans routers/auth.py).
+async def etsy_request(
+    method: str,
+    path: str,
+    *,
+    access_token: str,
+    json: Optional[dict] = None,
+    data: Optional[dict] = None,
+) -> Any:
+    if not ETSY_API_KEY or not ETSY_API_SECRET:
+        raise HTTPException(status_code=500, detail="Configuration Etsy manquante côté serveur.")
+
+    headers = {
+        "x-api-key": f"{ETSY_API_KEY}:{ETSY_API_SECRET}",
+        "Authorization": f"Bearer {access_token}",
+    }
+    url = f"{ETSY_API_BASE}{path}"
+    async with httpx.AsyncClient(timeout=15) as client:
+        response = await client.request(method.upper(), url, headers=headers, json=json, data=data)
+        for attempt in range(1, _ETSY_429_RETRIES + 1):
+            if response.status_code != 429:
+                break
+            await asyncio.sleep(attempt)
+            response = await client.request(method.upper(), url, headers=headers, json=json, data=data)
+
+    if response.status_code not in (200, 201):
+        try:
+            error_body = response.text[:500]
+        except Exception:
+            error_body = "<illisible>"
+        # Loggé, jamais renvoyé tel quel au client (règle CLAUDE.md).
+        logger.warning("Etsy API %s %s a répondu %s : %s", method.upper(), path, response.status_code, error_body)
+        if response.status_code in (401, 403):
+            raise HTTPException(
+                status_code=403,
+                detail="Etsy a refusé la modification (token expiré ou scope listings_w manquant — reconnecte ta boutique).",
+            )
+        raise HTTPException(status_code=502, detail="Échec de la mise à jour sur Etsy.")
+
+    try:
+        return response.json()
+    except ValueError:
+        return {}

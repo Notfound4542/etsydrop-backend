@@ -433,3 +433,355 @@ class BillingCheckoutResponse(BaseModel):
 class BillingStatusResponse(BaseModel):
     plan: str = Field(..., pattern="^(free|pro)$")
     plan_started_at: Optional[datetime] = None
+
+
+# =====================================================================
+# === PHASE 2 — FOURNISSEURS (routers/suppliers.py) ===
+# =====================================================================
+class SupplierPlatform(str, Enum):
+    eprolo = "eprolo"
+    aliexpress = "aliexpress"
+    cj = "cj"
+    autre = "autre"
+
+
+class SupplierCreate(BaseModel):
+    name: str = Field(..., min_length=2, max_length=80)
+    platform: SupplierPlatform = SupplierPlatform.autre
+    # Secrets : acceptés en entrée, stockés en DB, JAMAIS renvoyés (voir Supplier).
+    api_key: Optional[str] = Field(None, max_length=512)
+    api_secret: Optional[str] = Field(None, max_length=512)
+    contact_email: Optional[str] = Field(None, max_length=120, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    notes: Optional[str] = Field(None, max_length=1000)
+
+
+class SupplierUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=2, max_length=80)
+    platform: Optional[SupplierPlatform] = None
+    api_key: Optional[str] = Field(None, max_length=512)
+    api_secret: Optional[str] = Field(None, max_length=512)
+    contact_email: Optional[str] = Field(None, max_length=120, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    notes: Optional[str] = Field(None, max_length=1000)
+
+
+class Supplier(BaseModel):
+    id: str
+    name: str
+    platform: SupplierPlatform
+    contact_email: Optional[str] = None
+    notes: Optional[str] = None
+    # Seul indicateur exposé sur les secrets — la valeur elle-même ne quitte
+    # jamais le backend (CLAUDE.md > CYBERSÉCURITÉ).
+    has_api_key: bool = False
+    products_count: int = Field(0, ge=0)
+    created_at: datetime
+
+
+class SupplierDimensions(BaseModel):
+    length: Optional[float] = Field(None, ge=0, le=1000)
+    width: Optional[float] = Field(None, ge=0, le=1000)
+    height: Optional[float] = Field(None, ge=0, le=1000)
+
+
+class SupplierVariant(BaseModel):
+    color: Optional[str] = Field(None, max_length=60)
+    size: Optional[str] = Field(None, max_length=60)
+    stock: Optional[int] = Field(None, ge=0)
+    price: Optional[float] = Field(None, ge=0)
+
+
+class SupplierProductCreate(BaseModel):
+    supplier_product_id: Optional[str] = Field(None, max_length=120)
+    name: str = Field(..., min_length=2, max_length=200)
+    description: Optional[str] = Field(None, max_length=3000)
+    base_price: float = Field(..., ge=0, le=100000)
+    currency: str = Field("EUR", min_length=3, max_length=3)
+    weight_grams: Optional[int] = Field(None, ge=0, le=100000)
+    dimensions_cm: Optional[SupplierDimensions] = None
+    variants: List[SupplierVariant] = Field(default_factory=list, max_length=200)
+    images: List[str] = Field(default_factory=list, max_length=20)
+    moq: int = Field(1, ge=1, le=100000)
+    lead_time_days: Optional[int] = Field(None, ge=0, le=365)
+    linked_etsy_listing_id: Optional[int] = Field(None, ge=1)
+
+
+class SupplierProduct(SupplierProductCreate):
+    id: str
+    supplier_id: str
+    created_at: datetime
+
+
+class SupplierProductLink(BaseModel):
+    # None = délier la fiche.
+    linked_etsy_listing_id: Optional[int] = Field(None, ge=1)
+
+
+class SupplierImportResult(BaseModel):
+    supplier_id: str
+    imported: int = Field(..., ge=0)
+    # False quand la plateforme n'a pas (encore) d'API branchée : le message
+    # explique quoi faire (saisie manuelle en attendant).
+    api_available: bool
+    message: str
+
+
+class ConversationDirection(str, Enum):
+    sent = "sent"
+    received = "received"
+
+
+class ConversationStatus(str, Enum):
+    open = "open"
+    answered = "answered"
+    closed = "closed"
+
+
+class SupplierConversationCreate(BaseModel):
+    supplier_id: str = Field(..., min_length=36, max_length=36)
+    supplier_product_id: Optional[str] = Field(None, min_length=36, max_length=36)
+    subject: str = Field(..., min_length=2, max_length=140)
+    message: str = Field(..., min_length=2, max_length=4000)
+    direction: ConversationDirection = ConversationDirection.sent
+
+
+class SupplierConversationUpdate(BaseModel):
+    status: ConversationStatus
+
+
+class SupplierConversation(BaseModel):
+    id: str
+    supplier_id: str
+    supplier_product_id: Optional[str] = None
+    subject: str
+    message: str
+    direction: ConversationDirection
+    status: ConversationStatus
+    email_sent: bool = False
+    created_at: datetime
+
+
+# =====================================================================
+# === PHASE 2 — PRIX & LIVRAISON PAR PAYS (routers/pricing.py) ===
+# =====================================================================
+class ShippingCountry(BaseModel):
+    code: str = Field(..., min_length=2, max_length=2)
+    name: Optional[str] = Field(None, max_length=60)
+    shipping_cost: float = Field(..., ge=0, le=1000)
+    delivery_days_min: Optional[int] = Field(None, ge=0, le=120)
+    delivery_days_max: Optional[int] = Field(None, ge=0, le=180)
+
+
+class ShippingProfileCreate(BaseModel):
+    name: str = Field(..., min_length=2, max_length=80)
+    is_free_shipping: bool = False
+    target_margin_pct: float = Field(35.0, ge=0, le=95)
+    countries: List[ShippingCountry] = Field(..., min_length=1, max_length=40)
+
+
+class ShippingProfile(ShippingProfileCreate):
+    id: str
+    created_at: datetime
+
+
+class PricingAnalyzeRequest(BaseModel):
+    # UUID interne de la fiche (listings.id) — optionnel pour une simulation
+    # libre depuis la page Pricing sans fiche sélectionnée.
+    listing_id: Optional[str] = Field(None, min_length=36, max_length=36)
+    cost_price: float = Field(..., ge=0, le=100000)
+    target_margin_pct: Optional[float] = Field(None, ge=0, le=95)
+    shipping_profile_id: Optional[str] = Field(None, min_length=36, max_length=36)
+    # Saisie manuelle par pays (prioritaire sur le profil si fournie).
+    countries: Optional[List[ShippingCountry]] = Field(None, max_length=40)
+    free_shipping: Optional[bool] = None
+    # False pour un vendeur en franchise de TVA (auto-entrepreneur sous seuil).
+    vat_applicable: bool = True
+    # Prix actuellement affiché sur Etsy : si fourni, on renvoie aussi la
+    # marge RÉELLE à ce prix (pas seulement au prix recommandé).
+    current_price: Optional[float] = Field(None, ge=0, le=100000)
+
+
+class PricingCountryAnalysis(BaseModel):
+    country_code: str
+    country_name: str
+    flag: str
+    currency: str
+    recommended_price_eur: Optional[float] = None
+    recommended_price_local: Optional[float] = None
+    shipping_charged_eur: float = 0
+    shipping_cost_eur: float = 0
+    buyer_total_eur: float = 0
+    etsy_fees_eur: float = 0
+    currency_fee_eur: float = 0
+    vat_rate_pct: float = 0
+    vat_label: str = ""
+    vat_collected_by_etsy: bool = False
+    vat_eur: float = 0
+    seller_net_eur: float = 0
+    margin_eur: Optional[float] = None
+    margin_pct: Optional[float] = None
+    # Marge réelle au prix actuellement en ligne (si current_price fourni).
+    current_margin_eur: Optional[float] = None
+    current_margin_pct: Optional[float] = None
+    delivery_days_min: Optional[int] = None
+    delivery_days_max: Optional[int] = None
+    # False = marge cible inatteignable pour ce pays.
+    reachable: bool = True
+    # 'good' (≥ cible) | 'close' (cible - 10 pts ≤ marge < cible) | 'bad' (< cible - 10 pts ou négatif)
+    status: str = Field("good", pattern="^(good|close|bad)$")
+
+
+class PricingWorstCase(BaseModel):
+    country_code: str
+    country_name: str
+    flag: str
+    margin_pct: Optional[float] = None
+    reason: str
+
+
+class PricingAnalyzeResponse(BaseModel):
+    listing_id: Optional[str] = None
+    cost_price: float
+    target_margin_pct: float
+    free_shipping: bool
+    vat_applicable: bool
+    results: List[PricingCountryAnalysis]
+    worst_case: Optional[PricingWorstCase] = None
+    best_case: Optional[PricingWorstCase] = None
+    # Prix unique conseillé (Etsy n'a qu'un prix par fiche) : le plus élevé
+    # des prix recommandés pour que la marge tienne dans TOUS les pays.
+    suggested_single_price_eur: Optional[float] = None
+    analysis_id: Optional[str] = None
+
+
+class PricingApplyRequest(BaseModel):
+    price_eur: float = Field(..., gt=0, le=100000)
+
+
+class PricingApplyResponse(BaseModel):
+    listing_id: str
+    etsy_listing_id: str
+    price_eur: float
+    # 'listing' (fiche sans variantes → updateListing) ou 'inventory'
+    # (variantes → updateListingInventory, toutes les offerings au même prix)
+    method: str = Field(..., pattern="^(listing|inventory)$")
+    offerings_updated: int = Field(0, ge=0)
+
+
+# =====================================================================
+# === PHASE 2 — SEO (routers/seo.py) ===
+# =====================================================================
+class SeoCheck(BaseModel):
+    # 'ok' | 'warning' | 'missing'
+    status: str = Field(..., pattern="^(ok|warning|missing)$")
+    text: str = Field(..., max_length=200)
+
+
+class SeoSection(BaseModel):
+    score: int = Field(..., ge=0, le=100)
+    checks: List[SeoCheck] = Field(default_factory=list)
+
+
+class SeoKeyword(BaseModel):
+    keyword: str = Field(..., max_length=80)
+    count: int = Field(..., ge=0)
+    in_title: bool = False
+    in_tags: bool = False
+    in_description: bool = False
+
+
+class SeoAnalyzeResponse(BaseModel):
+    listing_id: str
+    etsy_listing_id: Optional[str] = None
+    score: int = Field(..., ge=0, le=100)
+    title: SeoSection
+    tags: SeoSection
+    description: SeoSection
+    keywords: List[SeoKeyword] = Field(default_factory=list)
+    suggestions: List[str] = Field(default_factory=list)
+    title_length: int = Field(0, ge=0)
+    tags_count: int = Field(0, ge=0)
+    description_length: int = Field(0, ge=0)
+
+
+class SeoTrendingKeyword(BaseModel):
+    keyword: str = Field(..., max_length=120)
+    # 'taxonomy' (catégorie Etsy) | 'catalogue' (tag fréquent dans tes fiches)
+    # | 'market' (tag fréquent chez les fiches actives Etsy pour cette recherche)
+    source: str = Field(..., pattern="^(taxonomy|catalogue|market)$")
+    count: int = Field(0, ge=0)
+
+
+class SeoTrendingResponse(BaseModel):
+    query: str
+    keywords: List[SeoTrendingKeyword] = Field(default_factory=list)
+    taxonomy_paths: List[str] = Field(default_factory=list)
+
+
+class SeoOptimizeResponse(BaseModel):
+    listing_id: str
+    title: str = Field(..., max_length=140)
+    description: str
+    tags: List[str] = Field(..., min_length=1, max_length=13)
+    # 'claude' (IA) | 'heuristic' (règles locales, sans clé Anthropic)
+    engine: str = Field(..., pattern="^(claude|heuristic)$")
+    notes: List[str] = Field(default_factory=list)
+
+
+class SeoApplyRequest(BaseModel):
+    title: Optional[str] = Field(None, min_length=3, max_length=140)
+    description: Optional[str] = Field(None, min_length=10, max_length=10000)
+    tags: Optional[List[str]] = Field(None, min_length=1, max_length=13)
+
+
+class SeoApplyResponse(BaseModel):
+    listing_id: str
+    etsy_listing_id: str
+    updated_fields: List[str]
+
+
+# =====================================================================
+# === PHASE 2 — TEST PRODUIT / SIMULATION D'ACHAT (routers/product_test.py) ===
+# =====================================================================
+class ProductTestRequest(BaseModel):
+    listing_id: str = Field(..., min_length=36, max_length=36)
+    destination_country: str = Field(..., min_length=2, max_length=2)
+    # Label de variante (voir listings.variants[].label) — None = prix de base.
+    variant_selected: Optional[str] = Field(None, max_length=160)
+    quantity: int = Field(1, ge=1, le=100)
+
+
+class ProductTestLine(BaseModel):
+    label: str = Field(..., max_length=120)
+    amount_eur: float
+    # 'buyer' (ce que paie l'acheteur) | 'fee' (déduit) | 'cost' (coût) | 'net'
+    kind: str = Field(..., pattern="^(buyer|fee|cost|net)$")
+    note: Optional[str] = Field(None, max_length=200)
+
+
+class ProductTestResult(BaseModel):
+    id: Optional[str] = None
+    listing_id: str
+    etsy_listing_id: Optional[str] = None
+    destination_country: str
+    country_name: str
+    flag: str
+    currency: str
+    variant_selected: Optional[str] = None
+    quantity: int = 1
+    unit_price_eur: float
+    shipping_eur: float
+    # 'etsy_profile' (profil d'expédition Etsy réel) | 'default' (estimation)
+    shipping_source: str = Field(..., pattern="^(etsy_profile|default)$")
+    delivery_days_min: Optional[int] = None
+    delivery_days_max: Optional[int] = None
+    buyer_total_eur: float
+    buyer_total_local: float
+    seller_net_eur: float
+    cost_price_eur: Optional[float] = None
+    margin_eur: Optional[float] = None
+    margin_pct: Optional[float] = None
+    # 'good' | 'close' | 'bad' | 'unknown' (pas de coût fournisseur)
+    status: str = Field(..., pattern="^(good|close|bad|unknown)$")
+    lines: List[ProductTestLine] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+    created_at: Optional[datetime] = None

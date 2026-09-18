@@ -33,9 +33,12 @@ from routers import (
     listings,
     orders,
     pricing,
+    product_test,
     promotion,
+    seo,
     shop_analyzer,
     sourcing,
+    suppliers,
 )
 
 load_dotenv()
@@ -126,6 +129,10 @@ app.include_router(generate.router, prefix="/api/generate", tags=["generate"])
 app.include_router(pricing.router, prefix="/api/pricing", tags=["pricing"])
 app.include_router(promotion.router, prefix="/api/promotion", tags=["promotion"])
 app.include_router(ads.router, prefix="/api/ads", tags=["ads"])
+# === PHASE 2 — fournisseurs, SEO, test produit (pricing étendu ci-dessus) ===
+app.include_router(suppliers.router, prefix="/api/suppliers", tags=["suppliers"])
+app.include_router(seo.router, prefix="/api/seo", tags=["seo"])
+app.include_router(product_test.router, prefix="/api/product-test", tags=["product-test"])
 # Le webhook Stripe (/api/billing/webhook) est exempté du rate limiter global
 # via @limiter.exempt dans routers/billing.py — Stripe retente agressivement
 # et n'a pas à être throttled comme un client public.
