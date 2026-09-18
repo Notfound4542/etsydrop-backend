@@ -8,7 +8,7 @@ from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from database import get_current_user, get_supabase
+from database import get_current_user
 from etsy_client import etsy_get, get_etsy_access_token, get_etsy_shop_id
 from models import (
     AnalyticsSummary,
@@ -21,16 +21,6 @@ from models import (
 
 router = APIRouter()
 
-# Valeurs par défaut renvoyées tant qu'aucune donnée n'a encore été calculée
-# pour ce compte (nouvel utilisateur, boutique Etsy pas encore synchronisée).
-_EMPTY_SUMMARY = {
-    "revenue_total": 0,
-    "net_margin_pct": 0,
-    "conversion_rate_pct": 0,
-    "net_profit": 0,
-    "history": [],
-}
-
 # === FRAIS ETSY (voir CLAUDE.md > Taxes & Change) ===
 ETSY_TRANSACTION_FEE_PCT = 0.065
 ETSY_LISTING_FEE_EUR = 0.20
@@ -40,18 +30,33 @@ EURO_ZONE_COUNTRIES = {"FR", "DE", "ES", "IT", "PT", "NL", "BE", "IE", "AT", "FI
 _PERIOD_DAYS = {"30d": 30, "90d": 90, "12m": 365}
 
 
-# === RÉSUMÉ ANALYTICS ===
+# === RÉSUMÉ ANALYTICS (Dashboard) ===
 @router.get("/summary", response_model=AnalyticsSummary)
 async def get_analytics_summary(user: CurrentUser = Depends(get_current_user)):
-    supabase = get_supabase()
-    result = (
-        supabase.table("analytics_summary")
-        .select("*")
-        .eq("user_id", user.id)
-        .maybe_single()
-        .execute()
+    """
+    Agrège les VRAIES commandes Etsy (receipts, via get_revenue ci-dessous) —
+    remplace l'ancienne lecture de la table `analytics_summary`, qui n'était
+    alimentée par aucun job et renvoyait donc toujours des zéros à la place
+    de données réelles.
+
+    net_margin_pct ici = marge après frais Etsy uniquement, PAS un vrai
+    bénéfice net : les fiches importées depuis Etsy n'ont pas de coût
+    fournisseur connu (margin_pct=0 à l'import, voir etsy_client.py >
+    sync_etsy_listings), donc un coût d'achat ne peut pas être déduit
+    honnêtement. conversion_rate_pct reste toujours None : Etsy Open API v3
+    n'expose ni le trafic ni les conversions par fiche à une appli tierce.
+    """
+    revenue = await get_revenue(period="30d", user=user)
+    net_margin_pct = (revenue.revenue_net / revenue.revenue_gross * 100) if revenue.revenue_gross else 0.0
+    return AnalyticsSummary(
+        revenue_total=revenue.revenue_gross,
+        net_margin_pct=round(net_margin_pct, 2),
+        conversion_rate_pct=None,
+        net_profit=revenue.revenue_net,
+        orders_count=revenue.orders_count,
+        top_product_title=revenue.top_products[0].title if revenue.top_products else None,
+        history=[],
     )
-    return result.data or _EMPTY_SUMMARY
 
 
 # === REVENUS (receipts Etsy sur une période) ===

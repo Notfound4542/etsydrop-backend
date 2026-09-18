@@ -78,9 +78,20 @@ class ListingCreate(BaseModel):
 class Listing(ListingCreate):
     id: str
     # Renseigné uniquement pour les fiches importées depuis la boutique Etsy
-    # connectée (voir routers/auth.py > _sync_etsy_listings) — jamais soumis
-    # par le client, donc absent de ListingCreate.
+    # connectée (voir routers/auth.py > etsy_callback / etsy_client.py >
+    # sync_etsy_listings) — jamais soumis par le client, donc absent de
+    # ListingCreate.
     etsy_listing_id: Optional[str] = None
+    # NULL pour une fiche créée à la main sans image.
+    image_url: Optional[str] = None
+    # Override du typage strict de ListingCreate.variants (List[ListingVariant],
+    # qui impose color/size/engraving — pensé pour la saisie manuelle) : les
+    # variantes réelles Etsy viennent de propriétés arbitraires (Color, Size,
+    # Material, ou toute autre taxonomie propre à la boutique), pas d'un
+    # schéma fixe. Voir etsy_client.py > fetch_listing_variants pour la forme
+    # exacte écrite ici : [{label, price, quantity}, ...] où `label` est déjà
+    # la combinaison de propriétés formatée (ex. "Color: Gold / Size: 40cm").
+    variants: List[Dict] = Field(default_factory=list)
     stock_status: StockStatus
     margin_pct: float = Field(..., ge=0, le=100)
     created_at: datetime
@@ -113,9 +124,18 @@ class RevenuePoint(BaseModel):
 
 class AnalyticsSummary(BaseModel):
     revenue_total: float = Field(..., ge=0)
+    # "Marge nette" ici = revenu moins frais Etsy uniquement (pas de coût
+    # fournisseur réel pour les fiches importées depuis Etsy, qui n'ont pas
+    # de prix d'achat connu) — voir routers/analytics.py > get_analytics_summary.
     net_margin_pct: float = Field(..., ge=0, le=100)
-    conversion_rate_pct: float = Field(..., ge=0, le=100)
+    # Etsy Open API v3 n'expose ni le trafic ni les conversions par fiche à
+    # une appli tierce (ce n'est disponible que dans Shop Manager, côté
+    # vendeur, hors API publique) — toujours None ici, jamais une valeur
+    # inventée. Le frontend doit afficher "Non disponible via API Etsy".
+    conversion_rate_pct: Optional[float] = Field(None, ge=0, le=100)
     net_profit: float = Field(..., ge=0)
+    orders_count: int = Field(..., ge=0)
+    top_product_title: Optional[str] = None
     history: List[RevenuePoint] = Field(default_factory=list)
 
 

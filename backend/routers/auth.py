@@ -29,7 +29,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 
 from database import get_current_user, get_supabase
-from etsy_client import etsy_get, sync_etsy_listings
+from etsy_client import etsy_get, sync_etsy_listings, sync_etsy_orders
 from models import CurrentUser, EtsyOAuthCallback, EtsyOAuthLoginResponse
 
 router = APIRouter()
@@ -228,7 +228,11 @@ async def etsy_callback(
     logger.info("Token Etsy enregistré pour user_id=%s (shop_id=%s).", entry["user_id"], shop_id)
 
     synced = await sync_etsy_listings(entry["user_id"], tokens["access_token"], shop_id)
-    logger.info("Connexion Etsy réussie pour user_id=%s : %d fiches importées.", entry["user_id"], synced)
+    synced_orders = await sync_etsy_orders(entry["user_id"], tokens["access_token"], shop_id)
+    logger.info(
+        "Connexion Etsy réussie pour user_id=%s : %d fiches importées, %d commandes importées.",
+        entry["user_id"], synced, synced_orders,
+    )
 
     return RedirectResponse(f"{FRONTEND_URL}/?etsy_connected=true")
 

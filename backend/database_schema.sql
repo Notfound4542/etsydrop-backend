@@ -127,7 +127,13 @@ CREATE TABLE IF NOT EXISTS listings (
   price_min DECIMAL(10,2) NOT NULL,
   price_max DECIMAL(10,2) NOT NULL,
   supplier TEXT NOT NULL,  -- SupplierName (my_catalog | eprolo | cj_dropshipping | printify | printful | zendrop | aliexpress)
-  variants JSONB DEFAULT '[]'::jsonb,  -- [{color, size, engraving, supplier_price}]
+  -- Pour une fiche importée depuis Etsy : [{label, price, quantity}] par
+  -- combinaison de propriétés (voir etsy_client.py > fetch_listing_variants).
+  -- Pour une fiche créée à la main : [{color, size, engraving, supplier_price}]
+  -- (voir models.ListingVariant). Les deux formes cohabitent dans la même
+  -- colonne JSONB — le frontend distingue via les clés présentes.
+  variants JSONB DEFAULT '[]'::jsonb,
+  image_url TEXT,  -- url_570xN de l'image principale Etsy (voir etsy_client.py > fetch_listing_image_url) ; NULL pour une fiche créée à la main sans image
   stock_status TEXT NOT NULL DEFAULT 'available',  -- available | low_stock | out_of_stock
   margin_pct DECIMAL(5,2) DEFAULT 0,
   created_at TIMESTAMPTZ DEFAULT now()
@@ -141,6 +147,7 @@ ALTER TABLE listings ADD COLUMN IF NOT EXISTS price_min DECIMAL(10,2) DEFAULT 0;
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS price_max DECIMAL(10,2) DEFAULT 0;
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS supplier TEXT DEFAULT 'my_catalog';
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS variants JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS image_url TEXT;
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS stock_status TEXT DEFAULT 'available';
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS margin_pct DECIMAL(5,2) DEFAULT 0;
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
@@ -185,6 +192,11 @@ ALTER TABLE orders ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'pending_supplie
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS tracking_number TEXT;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
 CREATE INDEX IF NOT EXISTS idx_orders_user_created ON orders(user_id, created_at DESC);
+-- Index PLEIN (pas de WHERE), pour la même raison que idx_listings_user_etsy_id
+-- ci-dessus : nécessaire pour que sync_etsy_orders() puisse upserter avec
+-- on_conflict="user_id,etsy_order_id" sans provoquer "no unique or exclusion
+-- constraint matching the ON CONFLICT specification".
+CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_user_etsy_id ON orders(user_id, etsy_order_id);
 
 -- === ANALYTICS_SUMMARY — snapshot revenus/marge par utilisateur ===
 -- Une ligne par utilisateur (voir .maybe_single() dans routers/analytics.py) —

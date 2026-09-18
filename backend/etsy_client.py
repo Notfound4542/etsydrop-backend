@@ -81,6 +81,71 @@ def get_etsy_shop_id(user_id: str) -> int:
     return shop_id
 
 
+# === IMAGE PRINCIPALE D'UNE FICHE ===
+# GET /listings/{listing_id}/images est un endpoint public (x-api-key
+# seulement) distinct de /shops/{shop_id}/listings/active : Etsy n'inclut
+# jamais les images dans la réponse listing elle-même (confirmé contre le
+# schéma ShopListing officiel — aucun champ "images"), il faut un appel par
+# fiche. url_570xN est un bon compromis qualité/poids pour une card de
+# catalogue (url_fullxfull peut peser plusieurs Mo).
+async def fetch_listing_image_url(listing_id: str) -> Optional[str]:
+    try:
+        payload = await etsy_get(f"/listings/{listing_id}/images")
+        results = payload.get("results", []) if isinstance(payload, dict) else []
+        if not results:
+            return None
+        return results[0].get("url_570xN") or results[0].get("url_fullxfull")
+    except Exception as exc:
+        logger.warning("Récupération image échouée pour listing_id=%s : %s: %s", listing_id, type(exc).__name__, exc)
+        return None
+
+
+# === VARIANTES (INVENTAIRE) D'UNE FICHE ===
+# GET /listings/{listing_id}/inventory renvoie products[] (une combinaison
+# de propriétés, ex. Couleur=Or/Taille=M) x offerings[] (prix/stock pour
+# cette combinaison) — pas de "sku"/"variations" plat sur le listing
+# lui-même (confirmé contre le schéma officiel ListingInventory). On
+# aplatit chaque (produit, offering activée) en une entrée simple ; les
+# noms de propriété (property_name) sont ceux de LA boutique (Color, Size,
+# Material...), jamais figés à color/size/engraving comme le suppose le
+# modèle de saisie manuelle (voir models.Listing.variants).
+async def fetch_listing_variants(listing_id: str) -> list:
+    try:
+        payload = await etsy_get(f"/listings/{listing_id}/inventory")
+    except Exception as exc:
+        logger.warning("Récupération inventaire échouée pour listing_id=%s : %s: %s", listing_id, type(exc).__name__, exc)
+        return []
+
+    products = payload.get("products", []) if isinstance(payload, dict) else []
+    variants = []
+    for product in products:
+        if product.get("is_deleted"):
+            continue
+        property_values = product.get("property_values", []) or []
+        label = " / ".join(
+            f"{pv.get('property_name')}: {', '.join(pv.get('values', []))}"
+            for pv in property_values
+            if pv.get("property_name") and pv.get("values")
+        ) or "Standard"
+
+        for offering in product.get("offerings", []) or []:
+            if not offering.get("is_enabled") or offering.get("is_deleted"):
+                continue
+            price_data = offering.get("price") or {}
+            try:
+                price = float(price_data.get("amount", 0)) / float(price_data.get("divisor", 100) or 100)
+            except (TypeError, ValueError):
+                price = 0.0
+            variants.append(
+                {
+                    "label": label[:120],
+                    "price": round(price, 2),
+                    "quantity": int(offering.get("quantity") or 0),
+                }
+            )
+    return variants
+
+
 # === IMPORT DES FICHES ACTIVES D'UNE BOUTIQUE CONNECTÉE ===
 # Partagé entre routers/auth.py (déclenché automatiquement juste après le
 # callback OAuth) et routers/listings.py > POST /sync (déclenchement manuel,
@@ -146,6 +211,20 @@ async def sync_etsy_listings(user_id: str, access_token: str, shop_id: Optional[
             else:
                 stock_status = "available"
 
+            # Deux appels Etsy supplémentaires par fiche (image + inventaire) :
+            # aucun des deux n'est inclus dans /listings/active (confirmé
+            # contre le schéma ShopListing officiel). Chacun est indépendant
+            # et n'empêche jamais l'import de la fiche elle-même s'il échoue
+            # (voir fetch_listing_image_url / fetch_listing_variants — aucun
+            # des deux ne lève).
+            image_url = await fetch_listing_image_url(listing_id)
+            variants = await fetch_listing_variants(listing_id)
+            variant_prices = [v["price"] for v in variants if v.get("price")]
+            if variant_prices:
+                price_min, price_max = min(variant_prices), max(variant_prices)
+            else:
+                price_min = price_max = price
+
             rows.append(
                 {
                     "user_id": user_id,
@@ -153,10 +232,11 @@ async def sync_etsy_listings(user_id: str, access_token: str, shop_id: Optional[
                     "name": title,
                     "description": description,
                     "tags": tags,
-                    "price_min": round(price, 2),
-                    "price_max": round(price, 2),
+                    "price_min": round(price_min, 2),
+                    "price_max": round(price_max, 2),
                     "supplier": "my_catalog",
-                    "variants": [],
+                    "variants": variants,
+                    "image_url": image_url,
                     "stock_status": stock_status,
                     "margin_pct": 0,
                 }
@@ -176,6 +256,104 @@ async def sync_etsy_listings(user_id: str, access_token: str, shop_id: Optional[
         # le distingue d'un simple rate limit dans les logs.
         logger.error(
             "Écriture des listings Etsy échouée pour user_id=%s : %s: %s",
+            user_id, type(exc).__name__, exc,
+            exc_info=True,
+        )
+        return 0
+
+    return len(rows)
+
+
+# === STATUT DE COMMANDE (mapping receipt Etsy -> OrderStatus) ===
+# Etsy n'a pas d'énum de statut équivalente à la nôtre (pending_supplier |
+# in_transit | delivered | delayed | return_requested) : `status` côté Etsy
+# ne parle que du PAIEMENT (paid/open/canceled/refunded...), et `is_shipped`
+# est un simple booléen — Etsy ne dit jamais "livré" avec certitude (pas de
+# preuve de livraison exposée par l'API), donc "delivered" n'est JAMAIS
+# déduit ici pour ne pas prétendre savoir ce qu'on ne sait pas.
+def _map_receipt_status(receipt: dict) -> str:
+    status = (receipt.get("status") or "").lower()
+    if status in ("fully refunded", "partially refunded", "canceled"):
+        return "return_requested"
+    if receipt.get("is_shipped"):
+        return "in_transit"
+    return "pending_supplier"
+
+
+# === IMPORT DES COMMANDES (RECEIPTS) D'UNE BOUTIQUE CONNECTÉE ===
+# Partagé entre routers/auth.py (déclenché automatiquement juste après le
+# callback OAuth, comme sync_etsy_listings) et routers/orders.py > POST /sync
+# (déclenchement manuel).
+async def sync_etsy_orders(user_id: str, access_token: str, shop_id: Optional[int]) -> int:
+    """
+    Importe les commandes payées de la boutique Etsy connectée dans la table
+    `orders`. Upsert sur (user_id, etsy_order_id) — voir l'index unique dans
+    database_schema.sql. Ne lève jamais, pour les mêmes raisons que
+    sync_etsy_listings.
+    """
+    if not shop_id:
+        logger.warning("Sync orders Etsy ignorée pour user_id=%s : shop_id non résolu.", user_id)
+        return 0
+
+    try:
+        payload = await etsy_get(
+            f"/shops/{shop_id}/receipts",
+            access_token=access_token,
+            params={"limit": 25, "was_paid": True},
+        )
+        receipts = payload.get("results", []) if isinstance(payload, dict) else []
+    except Exception as exc:
+        logger.warning("Sync orders Etsy échouée pour user_id=%s : %s: %s", user_id, type(exc).__name__, exc)
+        return 0
+
+    rows = []
+    for receipt in receipts:
+        try:
+            receipt_id = str(receipt.get("receipt_id") or "")
+            if not receipt_id:
+                continue
+
+            titles = [t.get("title") for t in (receipt.get("transactions") or []) if t.get("title")]
+            product_name = ", ".join(titles)[:140] if titles else "Commande Etsy"
+
+            grandtotal = receipt.get("grandtotal") or {}
+            try:
+                amount = float(grandtotal.get("amount", 0)) / float(grandtotal.get("divisor", 100) or 100)
+            except (TypeError, ValueError):
+                amount = 0.0
+
+            shipments = receipt.get("shipments") or []
+            tracking_number = shipments[0].get("tracking_code") if shipments else None
+
+            # Jamais l'email acheteur (voir CLAUDE.md > pas de données
+            # personnelles sensibles au-delà de ce qui sert le fulfillment) —
+            # `name` est déjà le nom du destinataire de l'expédition, requis
+            # pour préparer un colis, pas une donnée superflue.
+            customer_name = (receipt.get("name") or "Acheteur Etsy").strip()[:120] or "Acheteur Etsy"
+
+            rows.append(
+                {
+                    "user_id": user_id,
+                    "etsy_order_id": receipt_id,
+                    "customer_name": customer_name,
+                    "product_name": product_name,
+                    "supplier": "my_catalog",
+                    "amount": round(amount, 2),
+                    "status": _map_receipt_status(receipt),
+                    "tracking_number": tracking_number,
+                }
+            )
+        except (TypeError, ValueError):
+            continue
+
+    if not rows:
+        return 0
+
+    try:
+        get_supabase().table("orders").upsert(rows, on_conflict="user_id,etsy_order_id").execute()
+    except Exception as exc:
+        logger.error(
+            "Écriture des orders Etsy échouée pour user_id=%s : %s: %s",
             user_id, type(exc).__name__, exc,
             exc_info=True,
         )

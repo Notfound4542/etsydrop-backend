@@ -287,22 +287,31 @@
     printify: 'Printify', printful: 'Printful', zendrop: 'Zendrop', aliexpress: 'AliExpress'
   };
   function _mapListing(l) {
+    // l.image_url : vraie image Etsy (voir etsy_client.py > fetch_listing_image_url),
+    // absente pour une fiche créée à la main sans image — dans ce seul cas,
+    // fallback sur un visuel de substitution plutôt que de casser l'affichage.
+    const realImage = l.image_url || null;
     return {
       id: l.id,
       name: l.name,
-      image: 'https://picsum.photos/seed/' + encodeURIComponent(l.id) + '/400/400',
-      images: [0, 1, 2, 3, 4, 5].map(i => 'https://picsum.photos/seed/' + encodeURIComponent(l.id) + i + '/700/700'),
+      image: realImage || ('https://picsum.photos/seed/' + encodeURIComponent(l.id) + '/400/400'),
+      images: realImage ? [realImage] : [0, 1, 2, 3, 4, 5].map(i => 'https://picsum.photos/seed/' + encodeURIComponent(l.id) + i + '/700/700'),
       variantsCount: (l.variants || []).length,
       priceMin: l.price_min,
       priceMax: l.price_max,
       margin: Math.round(l.margin_pct),
       stock: STOCK_LABELS[l.stock_status] || 'disponible',
       supplier: SUPPLIER_LABELS[l.supplier] || l.supplier,
-      baseCost: (l.variants && l.variants[0]) ? l.variants[0].supplier_price : 0,
+      baseCost: (l.variants && l.variants[0]) ? (l.variants[0].price ?? l.variants[0].supplier_price ?? 0) : 0,
       freeShipping: false,
       description: l.description,
       tags: l.tags || [],
-      variants: (l.variants || []).map(v => ({ color: v.color, size: v.size, engraving: v.engraving, supplierPrice: v.supplier_price })),
+      // Forme brute conservée telle quelle : {label, price, quantity} pour une
+      // fiche importée depuis Etsy (propriétés arbitraires — voir
+      // etsy_client.py > fetch_listing_variants), {color, size, engraving,
+      // supplier_price} pour une fiche créée à la main. app() > variantLabel()
+      // / variantPrice() gèrent les deux formes à l'affichage.
+      variants: l.variants || [],
       suppliers: []
     };
   }
@@ -342,24 +351,21 @@
       // démo affichés, indiscernables de vraies données pour l'utilisateur.
       // Avant connexion, les données de démo restent (aperçu du produit).
       if (me && me.etsy_shop_connected) {
-        // /api/analytics/summary lit une table jamais alimentée par aucun job
-        // de sync (voir backend/routers/analytics.py) — toujours vide.
-        // /api/analytics/revenue interroge les receipts Etsy en direct avec
-        // le token OAuth stocké : seule source de revenu réellement connectée.
+        // /api/analytics/revenue interroge les receipts Etsy en direct avec le
+        // token OAuth stocké — seule source de revenu réellement connectée.
+        // revenue_net = revenu moins frais Etsy uniquement (pas de coût
+        // fournisseur connu pour une fiche importée) : ce n'est PAS un vrai
+        // bénéfice net, voir le libellé de la card "Revenu net (hors coûts
+        // fournisseur)" plutôt que "Bénéfice net".
         const revenue = await window.EDAPI.revenue('30d').catch(() => null);
         state.revenueTotal = revenue ? revenue.revenue_gross : 0;
         state.revenueDisplay = revenue ? revenue.revenue_gross : 0;
+        state.netProfit = revenue ? revenue.revenue_net : 0;
+        state.ordersCount = revenue ? revenue.orders_count : 0;
+        state.topProductTitle = (revenue && revenue.top_products && revenue.top_products[0]) ? revenue.top_products[0].title : null;
 
-        // console.log temporaires (diagnostic Catalogue à 0 fiche) — à retirer
-        // une fois confirmé que /api/listings/ est bien reçu et mappé.
-        console.log('[EtsyDrop] Appel GET /api/listings/…');
-        const listings = await window.EDAPI.listings().catch((e) => {
-          console.error('[EtsyDrop] GET /api/listings/ a échoué :', e);
-          return null;
-        });
-        console.log('[EtsyDrop] Réponse /api/listings/ :', listings);
+        const listings = await window.EDAPI.listings().catch(() => null);
         state.catalogProducts = Array.isArray(listings) ? listings.map(_mapListing) : [];
-        console.log('[EtsyDrop] catalogProducts assigné, count =', state.catalogProducts.length, state.catalogProducts);
 
         const orders = await window.EDAPI.orders().catch(() => null);
         state.orders = Array.isArray(orders) ? orders.map(_mapOrder) : [];
@@ -741,31 +747,40 @@
               <i class="fa-solid fa-sack-dollar text-accent text-sm"></i>
             </div>
             <p class="text-2xl font-extrabold text-ink-900 num" x-text="formatRevenue(revenueDisplay)"></p>
-            <p class="text-xs text-accent font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +18,4% vs mois dernier</p>
+            <!-- Comparaison vs mois dernier retirée pour une boutique connectée :
+                 nécessiterait un second appel /revenue sur la période précédente,
+                 pas encore implémenté — mieux vaut ne rien afficher qu'inventer un %. -->
+            <p x-show="!etsyConnected" class="text-xs text-accent font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +18,4% vs mois dernier (démo)</p>
           </div>
           <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4">
             <div class="flex items-center justify-between mb-2">
-              <span class="text-xs font-semibold text-gray-500">Bénéfice net</span>
+              <span class="text-xs font-semibold text-gray-500" x-text="etsyConnected ? 'Revenu net (hors coûts fournisseur)' : 'Bénéfice net'"></span>
               <i class="fa-solid fa-coins text-accent text-sm"></i>
             </div>
-            <p class="text-2xl font-extrabold text-ink-900 num">3 524,80 €</p>
-            <p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +21,2% vs mois dernier</p>
+            <p class="text-2xl font-extrabold text-ink-900 num" x-text="etsyConnected ? formatRevenue(netProfit) : '3 524,80 €'"></p>
+            <p x-show="!etsyConnected" class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +21,2% vs mois dernier (démo)</p>
+            <p x-show="etsyConnected" class="text-xs text-gray-400 mt-1">Après frais Etsy — hors coût fournisseur, non disponible pour les fiches importées.</p>
           </div>
           <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4">
             <div class="flex items-center justify-between mb-2">
               <span class="text-xs font-semibold text-gray-500">Commandes</span>
               <i class="fa-solid fa-box text-accent text-sm"></i>
             </div>
-            <p class="text-2xl font-extrabold text-ink-900 num">342</p>
-            <p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +9,6% vs mois dernier</p>
+            <p class="text-2xl font-extrabold text-ink-900 num" x-text="etsyConnected ? ordersCount : 342"></p>
+            <p x-show="!etsyConnected" class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +9,6% vs mois dernier (démo)</p>
+            <p x-show="etsyConnected" class="text-xs text-gray-400 mt-1">30 derniers jours, commandes payées.</p>
           </div>
           <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4">
             <div class="flex items-center justify-between mb-2">
               <span class="text-xs font-semibold text-gray-500">Note boutique</span>
               <i class="fa-solid fa-star text-amber-400 text-sm"></i>
             </div>
-            <p class="text-2xl font-extrabold text-ink-900 num">4,9 / 5</p>
-            <p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +0,1 vs mois dernier</p>
+            <!-- La note/avis boutique n'est pas exposée par l'API Etsy v3 à une
+                 appli tierce (pas d'endpoint public pour les reviews agrégées
+                 d'une boutique) — jamais inventée pour une boutique connectée. -->
+            <p class="text-2xl font-extrabold text-ink-900 num" x-text="etsyConnected ? 'N/D' : '4,9 / 5'"></p>
+            <p x-show="!etsyConnected" class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +0,1 vs mois dernier (démo)</p>
+            <p x-show="etsyConnected" class="text-xs text-gray-400 mt-1">Non disponible via API Etsy.</p>
           </div>
         </div>
 
@@ -900,7 +915,7 @@
                 <div>
                   <h3 class="font-bold text-sm text-ink-900 mb-2">Description</h3>
                   <p class="text-sm text-gray-600 leading-relaxed" x-text="selectedProduct.description"></p>
-                  <h4 class="font-bold text-xs text-ink-900 mt-4 mb-2">13 tags Etsy</h4>
+                  <h4 class="font-bold text-xs text-ink-900 mt-4 mb-2" x-text="selectedProduct.tags.length + ' tags Etsy'"></h4>
                   <div class="flex flex-wrap gap-1.5">
                     <template x-for="t in selectedProduct.tags" :key="t">
                       <span class="tag-pill bg-gray-100 text-gray-700" x-text="t"></span>
@@ -947,11 +962,12 @@
                   <h3 class="font-bold text-sm text-ink-900 mb-2">Variantes</h3>
                   <div class="overflow-x-auto">
                   <table class="w-full text-sm">
-                    <thead><tr class="text-left text-xs text-gray-500 border-b border-gray-100"><th class="pb-2 font-semibold">Couleur</th><th class="pb-2 font-semibold">Taille</th><th class="pb-2 font-semibold">Gravure</th><th class="pb-2 font-semibold">Prix fournisseur</th></tr></thead>
+                    <thead><tr class="text-left text-xs text-gray-500 border-b border-gray-100"><th class="pb-2 font-semibold">Variante</th><th class="pb-2 font-semibold">Stock</th><th class="pb-2 font-semibold">Prix</th></tr></thead>
                     <tbody class="divide-y divide-gray-50">
                       <template x-for="(v, i) in selectedProduct.variants" :key="i">
-                        <tr><td class="py-2" x-text="v.color"></td><td x-text="v.size"></td><td x-text="v.engraving"></td><td class="font-semibold" x-text="v.supplierPrice.toFixed(2)+' €'"></td></tr>
+                        <tr><td class="py-2" x-text="variantLabel(v)"></td><td x-text="v.quantity ?? '—'"></td><td class="font-semibold" x-text="variantPrice(v).toFixed(2)+' €'"></td></tr>
                       </template>
+                      <tr x-show="!selectedProduct.variants.length"><td colspan="3" class="py-3 text-gray-400 text-center">Aucune variante</td></tr>
                     </tbody>
                   </table>
                   </div>
@@ -960,12 +976,16 @@
                 <!-- Prix par pays -->
                 <div>
                   <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
-                    <h3 class="font-bold text-sm text-ink-900">Prix par pays</h3>
+                    <div class="flex items-center gap-2">
+                      <h3 class="font-bold text-sm text-ink-900">Prix par pays</h3>
+                      <span class="tag-pill bg-amber-100 text-amber-700 text-[10px]">Estimation — calculé, pas une donnée Etsy</span>
+                    </div>
                     <label class="flex items-center gap-2 text-xs font-semibold text-gray-600 cursor-pointer select-none">
                       <input type="checkbox" x-model="selectedProduct.freeShipping" class="accent-accent w-4 h-4">
                       Livraison gratuite (recalcule le prix pour 35% de marge)
                     </label>
                   </div>
+                  <p class="text-xs text-gray-500 mb-2">Simulateur de prix de vente cible (35% de marge nette) à partir du coût fournisseur — Etsy ne fournit pas de prix réels par pays à une appli tierce.</p>
                   <div class="overflow-x-auto">
                   <table class="w-full text-sm min-w-[760px]">
                     <thead><tr class="text-left text-xs text-gray-500 border-b border-gray-100">
@@ -1375,7 +1395,7 @@
         <div class="grid grid-cols-4 gap-4">
           <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Revenu (année)</p><p class="text-xl font-extrabold num">61 240 €</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +18,4% vs mois dernier</p></div>
           <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Marge nette moyenne</p><p class="text-xl font-extrabold text-accent-dark">41,8%</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +2,1 pt vs mois dernier</p></div>
-          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Taux conversion moyen</p><p class="text-xl font-extrabold">3,8%</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +0,3 pt vs mois dernier</p></div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Taux conversion moyen</p><p class="text-xl font-extrabold text-gray-400">N/D</p><p class="text-xs text-gray-400 font-semibold mt-1">Non disponible via API Etsy</p></div>
           <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Bénéfice réel (année)</p><p class="text-xl font-extrabold num">25 598 €</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +21,2% vs mois dernier</p></div>
         </div>
 
@@ -1384,24 +1404,16 @@
             <h3 class="font-bold text-sm text-ink-900 mb-4">Revenus vs bénéfice net — 12 mois</h3>
             <canvas id="chartAnalyticsMain" height="110"></canvas>
           </div>
-          <div @dblclick="openFocusMode('chartTraffic')" title="Double-clic pour agrandir" class="bg-white rounded-xl border border-gray-200 shadow-card p-5 cursor-zoom-in">
-            <h3 class="font-bold text-sm text-ink-900 mb-4">Sources de trafic</h3>
-            <canvas id="chartTraffic" height="150"></canvas>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-5">
+            <h3 class="font-bold text-sm text-ink-900 mb-2">Sources de trafic</h3>
+            <p class="text-xs text-gray-500">Non disponible via API Etsy — Etsy n'expose pas les statistiques de trafic ou de sources de visite à une appli tierce (réservé à Shop Manager côté vendeur).</p>
           </div>
         </div>
 
         <div class="grid grid-cols-2 gap-4">
           <div class="bg-white rounded-xl border border-gray-200 shadow-card p-5">
-            <h3 class="font-bold text-sm text-ink-900 mb-4">Taux de conversion par fiche</h3>
-            <table class="w-full text-sm">
-              <thead><tr class="text-left text-xs text-gray-500 border-b border-gray-100"><th class="pb-2 font-semibold">Fiche</th><th class="pb-2 font-semibold">Vues</th><th class="pb-2 font-semibold">Conversion</th></tr></thead>
-              <tbody class="divide-y divide-gray-50">
-                <tr><td class="py-2.5 font-medium">Collier prénom plaqué or</td><td>3 240</td><td class="font-semibold text-accent-dark">5,2%</td></tr>
-                <tr><td class="py-2.5 font-medium">Bracelet initiales gravées</td><td>2 180</td><td class="font-semibold text-accent-dark">4,4%</td></tr>
-                <tr><td class="py-2.5 font-medium">Bague prénom ajustable</td><td>2 910</td><td class="font-semibold text-amber-600">2,1%</td></tr>
-                <tr><td class="py-2.5 font-medium">Collier zodiaque "Lion"</td><td>1 640</td><td class="font-semibold text-rose-500">1,3%</td></tr>
-              </tbody>
-            </table>
+            <h3 class="font-bold text-sm text-ink-900 mb-2">Taux de conversion par fiche</h3>
+            <p class="text-xs text-gray-500">Non disponible via API Etsy — les vues et le taux de conversion par fiche ne sont pas exposés à une appli tierce (réservé à Shop Manager côté vendeur).</p>
           </div>
           <div @dblclick="openFocusMode('chartSupplierCost')" title="Double-clic pour agrandir" class="bg-white rounded-xl border border-gray-200 shadow-card p-5 cursor-zoom-in">
             <h3 class="font-bold text-sm text-ink-900 mb-4">Coût moyen par fournisseur</h3>
@@ -1969,6 +1981,12 @@ function app() {
     revenueTotal: 8432.50,
     revenueDisplay: 0,
     revenueFlash: false,
+    // Renseignés par window._edPostAuth() une fois connecté (voir
+    // EDAPI._edPostAuth) — restent à leurs valeurs de démo tant que la
+    // boutique Etsy n'est pas connectée.
+    netProfit: 3524.80,
+    ordersCount: 342,
+    topProductTitle: null,
     formatRevenue(v) {
       return v.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €';
     },
@@ -2241,6 +2259,21 @@ function app() {
           changeFee, marginEur, marginPct
         };
       });
+    },
+    // Deux formes possibles pour une entrée de `variants` (voir _mapListing
+    // dans le script EDAPI) : {label, price, quantity} pour une fiche Etsy
+    // réelle, {color, size, engraving, supplier_price} pour une fiche créée
+    // à la main. Ces deux méthodes normalisent l'affichage sans dupliquer le
+    // tableau du modal produit pour chaque forme.
+    variantLabel(v) {
+      if (v.label) return v.label;
+      const parts = [v.color, v.size].filter(Boolean);
+      if (v.engraving && v.engraving !== 'Non') parts.push('Gravure: ' + v.engraving);
+      return parts.join(' / ') || 'Variante';
+    },
+    variantPrice(v) {
+      const p = v.price ?? v.supplier_price;
+      return typeof p === 'number' ? p : 0;
     },
     generatedTitle(p) {
       const t = `${p.name} Personnalisé, Cadeau Bijou Sur Mesure Gravé, Idée Cadeau Unique`;
