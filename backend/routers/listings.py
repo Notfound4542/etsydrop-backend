@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from database import get_current_user, get_supabase
 from etsy_client import get_etsy_access_token, get_etsy_shop_id, sync_etsy_listings
-from models import CurrentUser, Listing, ListingCreate, SyncResult
+from models import CurrentUser, Listing, ListingCreate, ListingPricingUpdate, SyncResult
 
 router = APIRouter()
 
@@ -21,16 +21,15 @@ router = APIRouter()
 @router.post("/sync", response_model=SyncResult)
 async def sync_listings(user: CurrentUser = Depends(get_current_user)):
     """
-    Redéclenche l'import des fiches actives depuis la boutique Etsy connectée,
-    sans repasser par tout le flow OAuth. Utile quand shop_id ou le token ont
-    été corrigés directement en base (ex. correctif SQL) : etsy_callback est
-    le SEUL autre endroit qui appelle sync_etsy_listings, donc un tel
-    correctif ne déclenche jamais la sync tout seul.
+    Redéclenche l'import des fiches actives (titre, tags, image principale,
+    variantes/inventaire) depuis la boutique Etsy connectée, sans repasser
+    par tout le flow OAuth. Le token est rafraîchi automatiquement s'il a
+    expiré (voir etsy_client.py > get_etsy_access_token).
     """
-    access_token = get_etsy_access_token(user.id)
+    access_token = await get_etsy_access_token(user.id)
     shop_id = get_etsy_shop_id(user.id)
-    synced = await sync_etsy_listings(user.id, access_token, shop_id)
-    return {"synced": synced, "shop_id": shop_id}
+    result = await sync_etsy_listings(user.id, access_token, shop_id)
+    return {**result, "shop_id": shop_id}
 
 
 # === LISTE DES FICHES ===
@@ -79,6 +78,35 @@ async def create_listing(payload: ListingCreate, user: CurrentUser = Depends(get
 async def update_listing(listing_id: str, payload: ListingCreate, user: CurrentUser = Depends(get_current_user)):
     supabase = get_supabase()
     record = payload.model_dump(mode="json")
+    result = (
+        supabase.table("listings")
+        .update(record)
+        .eq("id", listing_id)
+        .eq("user_id", user.id)
+        .execute()
+    )
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Fiche introuvable.")
+    return result.data[0]
+
+
+# === COÛT FOURNISSEUR & MARGE CIBLE (saisie manuelle) ===
+@router.patch("/{listing_id}/pricing", response_model=Listing)
+async def update_listing_pricing(
+    listing_id: str,
+    payload: ListingPricingUpdate,
+    user: CurrentUser = Depends(get_current_user),
+):
+    """
+    Etsy ne connaît pas le coût d'achat d'une fiche : il est saisi ici par
+    l'utilisateur et sert au simulateur "Prix par pays" (frontend) à la
+    place du placeholder. Une resync Etsy ne l'écrase jamais (voir
+    etsy_client.py > sync_etsy_listings).
+    """
+    record = payload.model_dump(exclude_unset=True)
+    if not record:
+        raise HTTPException(status_code=422, detail="Aucun champ à mettre à jour.")
+    supabase = get_supabase()
     result = (
         supabase.table("listings")
         .update(record)

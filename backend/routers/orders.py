@@ -21,7 +21,7 @@ router = APIRouter()
 @router.post("/sync", response_model=SyncResult)
 async def sync_orders(user: CurrentUser = Depends(get_current_user)):
     """Redéclenche l'import des commandes payées depuis la boutique Etsy connectée."""
-    access_token = get_etsy_access_token(user.id)
+    access_token = await get_etsy_access_token(user.id)
     shop_id = get_etsy_shop_id(user.id)
     synced = await sync_etsy_orders(user.id, access_token, shop_id)
     return {"synced": synced, "shop_id": shop_id}

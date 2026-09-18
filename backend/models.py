@@ -45,6 +45,7 @@ class CurrentUser(BaseModel):
     # ici (évite une dépendance supplémentaire à email-validator).
     email: Optional[str] = None
     etsy_shop_connected: bool = False
+    etsy_shop_name: Optional[str] = None
 
 
 class EtsyOAuthLoginResponse(BaseModel):
@@ -94,10 +95,28 @@ class Listing(ListingCreate):
     variants: List[Dict] = Field(default_factory=list)
     stock_status: StockStatus
     margin_pct: float = Field(..., ge=0, le=100)
+    # Coût fournisseur saisi à la main (jamais fourni par Etsy) et marge
+    # cible : alimentent le simulateur "Prix par pays" avec un coût réel au
+    # lieu du placeholder — voir routers/listings.py > update_listing_pricing.
+    cost_price: Optional[float] = Field(None, ge=0)
+    target_margin: float = Field(35.0, ge=0, le=95)
     created_at: datetime
 
 
+class ListingPricingUpdate(BaseModel):
+    cost_price: Optional[float] = Field(None, ge=0, le=100000)
+    target_margin: Optional[float] = Field(None, ge=0, le=95)
+
+
 # === ORDERS (commandes / fulfillment) ===
+class OrderItem(BaseModel):
+    listing_id: str = Field("", max_length=40)
+    title: str = Field("", max_length=140)
+    quantity: int = Field(1, ge=0)
+    price: float = Field(0, ge=0)
+    variations: List[str] = Field(default_factory=list)
+
+
 class Order(BaseModel):
     id: str
     etsy_order_id: str
@@ -107,12 +126,26 @@ class Order(BaseModel):
     amount: float = Field(..., ge=0)
     status: OrderStatus
     tracking_number: Optional[str] = Field(None, max_length=64)
+    total_price: Optional[float] = Field(None, ge=0)
+    currency: str = Field("EUR", min_length=3, max_length=3)
+    # Statut brut Etsy (Paid, Completed, Open…) — distinct de `status`, qui
+    # est notre enum de fulfillment.
+    etsy_status: Optional[str] = Field(None, max_length=40)
+    buyer_email: Optional[str] = None
+    items: List[OrderItem] = Field(default_factory=list)
+    created_timestamp: Optional[int] = None
+    synced_at: Optional[datetime] = None
     created_at: datetime
 
 
 class SyncResult(BaseModel):
     synced: int = Field(..., ge=0)
     shop_id: int
+    # Détail de la sync des fiches (voir etsy_client.py > sync_etsy_listings) —
+    # absents pour la sync des commandes.
+    received: Optional[int] = Field(None, ge=0)
+    with_image: Optional[int] = Field(None, ge=0)
+    with_variants: Optional[int] = Field(None, ge=0)
 
 
 class OrderFulfillRequest(BaseModel):
@@ -124,7 +157,9 @@ class OrderFulfillRequest(BaseModel):
 class RevenuePoint(BaseModel):
     period: str = Field(..., max_length=20)
     revenue: float = Field(..., ge=0)
-    profit: float = Field(..., ge=0)
+    # Peut être négatif sur un mois à 1 commande (frais fixes > marge).
+    profit: float
+    orders: int = Field(0, ge=0)
 
 
 class AnalyticsSummary(BaseModel):
@@ -138,8 +173,11 @@ class AnalyticsSummary(BaseModel):
     # vendeur, hors API publique) — toujours None ici, jamais une valeur
     # inventée. Le frontend doit afficher "Non disponible via API Etsy".
     conversion_rate_pct: Optional[float] = Field(None, ge=0, le=100)
-    net_profit: float = Field(..., ge=0)
+    visitors: Optional[int] = None
+    shop_rating: Optional[float] = None
+    net_profit: float
     orders_count: int = Field(..., ge=0)
+    avg_order_value: float = Field(0, ge=0)
     top_product_title: Optional[str] = None
     history: List[RevenuePoint] = Field(default_factory=list)
 
@@ -210,11 +248,16 @@ class RevenueTopProduct(BaseModel):
 
 
 class RevenueAnalytics(BaseModel):
+    period: str = Field("30d", max_length=10)
     revenue_gross: float = Field(..., ge=0)
     revenue_net: float
     orders_count: int = Field(..., ge=0)
     avg_order_value: float = Field(..., ge=0)
     top_products: List[RevenueTopProduct] = Field(default_factory=list)
+    # Répartition par statut de fulfillment (enum OrderStatus -> nombre) —
+    # alimente le donut "Statut des commandes" du dashboard.
+    status_breakdown: Dict[str, int] = Field(default_factory=dict)
+    history: List[RevenuePoint] = Field(default_factory=list)
 
 
 # === ANALYTICS — MARGE PAR PAYS ===

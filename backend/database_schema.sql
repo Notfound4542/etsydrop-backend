@@ -150,6 +150,12 @@ ALTER TABLE listings ADD COLUMN IF NOT EXISTS variants JSONB DEFAULT '[]'::jsonb
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS image_url TEXT;
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS stock_status TEXT DEFAULT 'available';
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS margin_pct DECIMAL(5,2) DEFAULT 0;
+-- Coût fournisseur saisi à la main (Etsy ne le connaît pas) et marge cible :
+-- alimentent le simulateur "Prix par pays" et, à terme, le pricing
+-- intelligent. Jamais écrasés par une resync Etsy (voir etsy_client.py >
+-- sync_etsy_listings — ces colonnes ne font pas partie de l'upsert).
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS cost_price DECIMAL(10,2);
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS target_margin DECIMAL(5,2) DEFAULT 35.0;
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
 CREATE INDEX IF NOT EXISTS idx_listings_user_stock ON listings(user_id, stock_status);
 -- PAS un index partiel (WHERE etsy_listing_id IS NOT NULL) : l'upsert de
@@ -190,6 +196,20 @@ ALTER TABLE orders ADD COLUMN IF NOT EXISTS supplier TEXT DEFAULT 'my_catalog';
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS amount DECIMAL(10,2) DEFAULT 0;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'pending_supplier';
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS tracking_number TEXT;
+-- Données brutes du receipt Etsy (voir etsy_client.py > sync_etsy_orders) :
+-- total_price/currency = grandtotal Etsy ; etsy_status = statut brut Etsy
+-- (Paid, Completed…) distinct de `status` (notre enum de fulfillment) ;
+-- items = [{listing_id, title, quantity, price, variations}] — base des
+-- analytics "fiche la plus vendue" ; created_timestamp = epoch Etsy.
+-- etsy_order_id reste en TEXT (pas BIGINT) : même valeur, et changer le type
+-- d'une colonne sous un index unique n'est pas idempotent.
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS total_price DECIMAL(10,2);
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS currency TEXT DEFAULT 'EUR';
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS etsy_status TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS buyer_email TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS items JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS created_timestamp BIGINT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS synced_at TIMESTAMPTZ DEFAULT now();
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
 CREATE INDEX IF NOT EXISTS idx_orders_user_created ON orders(user_id, created_at DESC);
 -- Index PLEIN (pas de WHERE), pour la même raison que idx_listings_user_etsy_id
@@ -251,6 +271,28 @@ ALTER TABLE sourcing_cache ADD COLUMN IF NOT EXISTS recommended_sell_price DECIM
 ALTER TABLE sourcing_cache ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
 CREATE INDEX IF NOT EXISTS idx_sourcing_cache_user_product ON sourcing_cache(user_id, product_name);
 
+-- === SOCIAL_POSTS — publications réseaux sociaux (section "Réseaux", à venir) ===
+-- Structure préparée en amont : aucun endpoint ne l'alimente encore, l'onglet
+-- "Réseaux" du frontend est désactivé avec un badge "Bientôt".
+CREATE TABLE IF NOT EXISTS social_posts (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID REFERENCES auth.users(id),
+  listing_id BIGINT,
+  platform TEXT,  -- 'instagram' | 'tiktok' | 'pinterest'
+  content TEXT,
+  scheduled_at TIMESTAMPTZ,
+  status TEXT DEFAULT 'draft',
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+ALTER TABLE social_posts ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id);
+ALTER TABLE social_posts ADD COLUMN IF NOT EXISTS listing_id BIGINT;
+ALTER TABLE social_posts ADD COLUMN IF NOT EXISTS platform TEXT;
+ALTER TABLE social_posts ADD COLUMN IF NOT EXISTS content TEXT;
+ALTER TABLE social_posts ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ;
+ALTER TABLE social_posts ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'draft';
+ALTER TABLE social_posts ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
+CREATE INDEX IF NOT EXISTS idx_social_posts_user_scheduled ON social_posts(user_id, scheduled_at);
+
 -- =====================================================================
 -- Row Level Security — la clé "anon/publishable" Supabase est exposée
 -- publiquement dans le frontend (indispensable pour Supabase Auth). Sans
@@ -271,6 +313,7 @@ ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
 ALTER TABLE analytics_summary ENABLE ROW LEVEL SECURITY;
 ALTER TABLE keywords ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sourcing_cache ENABLE ROW LEVEL SECURITY;
+ALTER TABLE social_posts ENABLE ROW LEVEL SECURITY;
 
 -- DROP POLICY IF EXISTS + CREATE POLICY (au lieu de CREATE POLICY seul) :
 -- contrairement à CREATE TABLE, Postgres n'a pas de "CREATE POLICY IF NOT
@@ -291,6 +334,8 @@ DROP POLICY IF EXISTS "own row only" ON analytics_summary;
 CREATE POLICY "own row only" ON analytics_summary FOR ALL USING (auth.uid() = user_id);
 DROP POLICY IF EXISTS "own rows only" ON sourcing_cache;
 CREATE POLICY "own rows only" ON sourcing_cache FOR ALL USING (auth.uid() = user_id);
+DROP POLICY IF EXISTS "own rows only" ON social_posts;
+CREATE POLICY "own rows only" ON social_posts FOR ALL USING (auth.uid() = user_id);
 -- keywords : référentiel partagé, lecture seule pour tout utilisateur connecté
 -- (les écritures passent par le backend avec la clé service_role, qui
 -- contourne RLS — aucune policy d'écriture n'est donc nécessaire ici).

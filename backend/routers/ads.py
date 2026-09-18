@@ -32,7 +32,7 @@ META_GRAPH_URL = "https://graph.facebook.com/v18.0"
 
 # === SYNCHRONISATION ETSY ADS (payment ledger) ===
 async def _sync_etsy_ads(user_id: str, date_from: str, date_to: str) -> AdsSyncResponse:
-    access_token = get_etsy_access_token(user_id)
+    access_token = await get_etsy_access_token(user_id)
     etsy_user_id = etsy_shop_id_from_token(access_token)
 
     shop = await etsy_get(f"/users/{etsy_user_id}/shops", access_token=access_token)

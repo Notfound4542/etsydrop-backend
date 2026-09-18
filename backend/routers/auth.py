@@ -230,8 +230,8 @@ async def etsy_callback(
     synced = await sync_etsy_listings(entry["user_id"], tokens["access_token"], shop_id)
     synced_orders = await sync_etsy_orders(entry["user_id"], tokens["access_token"], shop_id)
     logger.info(
-        "Connexion Etsy réussie pour user_id=%s : %d fiches importées, %d commandes importées.",
-        entry["user_id"], synced, synced_orders,
+        "Connexion Etsy réussie pour user_id=%s : %d fiches importées (%d avec image, %d avec variantes), %d commandes importées.",
+        entry["user_id"], synced["synced"], synced["with_image"], synced["with_variants"], synced_orders,
     )
 
     return RedirectResponse(f"{FRONTEND_URL}/?etsy_connected=true")
@@ -250,6 +250,7 @@ async def etsy_disconnect(user: CurrentUser = Depends(get_current_user)):
 async def get_me(user: CurrentUser = Depends(get_current_user)):
     """Retourne l'utilisateur courant, enrichi du statut de connexion Etsy."""
     supabase = get_supabase()
-    result = supabase.table("etsy_tokens").select("user_id").eq("user_id", user.id).execute()
+    result = supabase.table("etsy_tokens").select("user_id,shop_name").eq("user_id", user.id).execute()
     user.etsy_shop_connected = bool(result.data)
+    user.etsy_shop_name = result.data[0].get("shop_name") if result.data else None
     return user

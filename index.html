@@ -18,7 +18,11 @@
 (function () {
   'use strict';
 
-  const BACKEND   = 'https://etsydrop-backend-production.up.railway.app';
+  // En dev local (Live Server / http.server sur localhost), on cible le
+  // backend uvicorn local (voir CORS FRONTEND_ORIGIN_LOCAL dans main.py) ;
+  // partout ailleurs, l'API Railway de production.
+  const _isLocalDev = ['localhost', '127.0.0.1'].includes(window.location.hostname);
+  const BACKEND   = _isLocalDev ? 'http://localhost:8000' : 'https://etsydrop-backend-production.up.railway.app';
   const SB_URL    = 'https://wlqzhoixoxrtueldsqkv.supabase.co';
   const SB_KEY    = 'sb_publishable_M-2zNvOpk644GMzrC_-k-g_kSR83Mun';
 
@@ -139,6 +143,7 @@
     listings:     (stockStatus) => api('/api/listings/' + (stockStatus ? '?stock_status=' + stockStatus : '')),
     listing:      (id)          => api('/api/listings/' + id),
     syncListings: ()            => api('/api/listings/sync', { method: 'POST' }),
+    listingPricing: (id, d)     => api('/api/listings/' + id + '/pricing', { method: 'PATCH', body: JSON.stringify(d) }),
 
     // Orders
     orders:     ()             => api('/api/orders/'),
@@ -288,32 +293,67 @@
     my_catalog: 'Mon catalogue', eprolo: 'Eprolo', cj_dropshipping: 'CJ Dropshipping',
     printify: 'Printify', printful: 'Printful', zendrop: 'Zendrop', aliexpress: 'AliExpress'
   };
+  // Placeholder neutre (SVG inline) pour une fiche réelle sans image — jamais
+  // une photo aléatoire (picsum) qui passerait pour un vrai visuel produit.
+  const NO_IMAGE_SVG = 'data:image/svg+xml;utf8,' + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400"><rect width="400" height="400" fill="#F1F2F4"/><g fill="none" stroke="#C4C9D4" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"><rect x="110" y="120" width="180" height="160" rx="16"/><circle cx="160" cy="170" r="16"/><path d="M120 260l55-60 40 40 30-30 45 50"/></g><text x="200" y="330" text-anchor="middle" font-family="Inter, Arial" font-size="18" font-weight="600" fill="#9CA3AF">Image non disponible</text></svg>'
+  );
+  window.ED_NO_IMAGE = NO_IMAGE_SVG;
+
+  // Résumé "Color: Gold, Silver / Size: S, M, L" depuis les variantes
+  // structurées Etsy ({properties: {Color: 'Gold', Size: 'S'}}) — une entrée
+  // par combinaison, on regroupe les valeurs distinctes par propriété.
+  function _variantSummary(variants) {
+    const byProp = {};
+    (variants || []).forEach(v => {
+      const props = v.properties || {};
+      Object.keys(props).forEach(k => {
+        if (!byProp[k]) byProp[k] = [];
+        String(props[k]).split(',').map(s => s.trim()).filter(Boolean).forEach(val => {
+          if (!byProp[k].includes(val)) byProp[k].push(val);
+        });
+      });
+    });
+    return Object.keys(byProp).map(k => k + ': ' + byProp[k].join(', ')).join(' / ');
+  }
+
   function _mapListing(l) {
-    // l.image_url : vraie image Etsy (voir etsy_client.py > fetch_listing_image_url),
-    // absente pour une fiche créée à la main sans image — dans ce seul cas,
-    // fallback sur un visuel de substitution plutôt que de casser l'affichage.
+    // l.image_url : vraie image Etsy (voir etsy_client.py > fetch_listing_image_url).
     const realImage = l.image_url || null;
+    const variants = l.variants || [];
     return {
       id: l.id,
+      etsyListingId: l.etsy_listing_id || null,
       name: l.name,
-      image: realImage || ('https://picsum.photos/seed/' + encodeURIComponent(l.id) + '/400/400'),
-      images: realImage ? [realImage] : [0, 1, 2, 3, 4, 5].map(i => 'https://picsum.photos/seed/' + encodeURIComponent(l.id) + i + '/700/700'),
-      variantsCount: (l.variants || []).length,
+      image: realImage || NO_IMAGE_SVG,
+      images: [realImage || NO_IMAGE_SVG],
+      variantsCount: variants.length,
+      variantSummary: _variantSummary(variants),
       priceMin: l.price_min,
       priceMax: l.price_max,
-      margin: Math.round(l.margin_pct),
+      // Marge réelle uniquement si le coût fournisseur est connu (saisi à la
+      // main) : (prix - coût - frais Etsy 6,5% - 0,20 €) / prix. Sinon null →
+      // affiché "–", jamais un 0% qui ressemblerait à une vraie mesure.
+      margin: (typeof l.cost_price === 'number' && l.price_min > 0)
+        ? Math.round(((l.price_min - l.cost_price - l.price_min * 0.065 - 0.20) / l.price_min) * 100)
+        : null,
       stock: STOCK_LABELS[l.stock_status] || 'disponible',
       supplier: SUPPLIER_LABELS[l.supplier] || l.supplier,
-      baseCost: (l.variants && l.variants[0]) ? (l.variants[0].price ?? l.variants[0].supplier_price ?? 0) : 0,
+      // Coût fournisseur RÉEL saisi par l'utilisateur (listings.cost_price),
+      // null tant qu'il n'est pas renseigné — le simulateur "Prix par pays"
+      // l'exige plutôt que de prendre le prix de vente Etsy pour un coût.
+      baseCost: (typeof l.cost_price === 'number') ? l.cost_price : null,
+      costPrice: (typeof l.cost_price === 'number') ? l.cost_price : null,
+      targetMargin: (typeof l.target_margin === 'number') ? l.target_margin : 35,
       freeShipping: false,
       description: l.description,
       tags: l.tags || [],
-      // Forme brute conservée telle quelle : {label, price, quantity} pour une
-      // fiche importée depuis Etsy (propriétés arbitraires — voir
-      // etsy_client.py > fetch_listing_variants), {color, size, engraving,
-      // supplier_price} pour une fiche créée à la main. app() > variantLabel()
-      // / variantPrice() gèrent les deux formes à l'affichage.
-      variants: l.variants || [],
+      // Forme brute conservée telle quelle : {label, price, quantity,
+      // properties} pour une fiche importée depuis Etsy (propriétés
+      // arbitraires — voir etsy_client.py > fetch_listing_variants), {color,
+      // size, engraving, supplier_price} pour une fiche créée à la main.
+      // app() > variantLabel() / variantPrice() gèrent les deux formes.
+      variants,
       suppliers: []
     };
   }
@@ -323,13 +363,19 @@
      `status` reste la valeur brute de l'enum OrderStatus : c'est
      orderStatusMeta() côté template qui la traduit en libellé/couleur. ---- */
   function _mapOrder(o) {
+    const items = Array.isArray(o.items) ? o.items : [];
+    const created = o.created_at ? new Date(o.created_at) : null;
     return {
       id: '#' + o.etsy_order_id,
+      date: created && !isNaN(created) ? created.toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' }) : '—',
       customer: o.customer_name,
       product: o.product_name,
       supplier: SUPPLIER_LABELS[o.supplier] || o.supplier,
-      amount: o.amount,
+      amount: (typeof o.total_price === 'number') ? o.total_price : o.amount,
+      currency: o.currency || 'EUR',
+      itemsCount: items.reduce((sum, it) => sum + (it.quantity || 1), 0) || (items.length || 1),
       status: o.status,
+      etsyStatus: o.etsy_status || null,
       tracking: o.tracking_number || '—'
     };
   }
@@ -353,7 +399,10 @@
 
     try {
       const me = await window.EDAPI.me().catch(() => null);
-      if (me) state.etsyConnected = !!me.etsy_shop_connected;
+      if (me) {
+        state.etsyConnected = !!me.etsy_shop_connected;
+        state.etsyShopName = me.etsy_shop_name || null;
+      }
 
       // Une fois la boutique connectée, les données réelles (même vides/à
       // zéro) DOIVENT remplacer les données de démo — sinon un échec d'appel
@@ -368,17 +417,22 @@
         state.orders = Array.isArray(orders) ? orders.map(_mapOrder) : [];
         state.ordersCount = Array.isArray(orders) ? orders.length : 0;
 
-        // /api/analytics/revenue interroge les receipts Etsy en direct avec le
-        // token OAuth stocké — seule source de revenu réellement connectée.
-        // revenue_net = revenu moins frais Etsy uniquement (pas de coût
-        // fournisseur connu pour une fiche importée) : ce n'est PAS un vrai
-        // bénéfice net, voir le libellé de la card "Revenu net (hors coûts
-        // fournisseur)" plutôt que "Bénéfice net".
+        // /api/analytics/revenue agrège la table `orders` (commandes Etsy
+        // synchronisées en DB) — jamais de valeur en dur. revenue_net =
+        // revenu moins frais Etsy uniquement (pas de coût fournisseur connu
+        // pour une fiche importée) : ce n'est PAS un vrai bénéfice net, voir
+        // le libellé "Revenu net (hors coûts fournisseur)".
         const revenue = await window.EDAPI.revenue('30d').catch(() => null);
         state.revenueTotal = revenue ? revenue.revenue_gross : 0;
-        state.revenueDisplay = revenue ? revenue.revenue_gross : 0;
+        state.animateRevenue(0, state.revenueTotal, 900);
         state.netProfit = revenue ? revenue.revenue_net : 0;
+        state.ordersCount = revenue ? revenue.orders_count : state.ordersCount;
+        state.avgOrderValue = revenue ? revenue.avg_order_value : 0;
         state.topProductTitle = (revenue && revenue.top_products && revenue.top_products[0]) ? revenue.top_products[0].title : null;
+        state.topProducts = (revenue && Array.isArray(revenue.top_products)) ? revenue.top_products : [];
+        state.orderStatusBreakdown = (revenue && revenue.status_breakdown) ? revenue.status_breakdown : {};
+        state.revenueHistory = (revenue && Array.isArray(revenue.history)) ? revenue.history : [];
+        if (typeof state.refreshDataCharts === 'function') state.refreshDataCharts();
       }
     } catch(e) {
       console.warn('[EtsyDrop] Erreur chargement données:', e);
@@ -468,7 +522,9 @@
       ]);
       await window._edPostAuth();
       const parts = [];
-      parts.push(listingsResult.error ? ('fiches : erreur (' + listingsResult.error + ')') : (listingsResult.synced + ' fiche(s) synchronisée(s)'));
+      parts.push(listingsResult.error
+        ? ('fiches : erreur (' + listingsResult.error + ')')
+        : (listingsResult.synced + ' fiche(s) synchronisée(s)' + (typeof listingsResult.with_image === 'number' ? ' (' + listingsResult.with_image + ' avec image, ' + listingsResult.with_variants + ' avec variantes)' : '')));
       parts.push(ordersResult.error ? ('commandes : erreur (' + ordersResult.error + ')') : (ordersResult.synced + ' commande(s) synchronisée(s)'));
       alert('Resynchronisation Etsy : ' + parts.join(', '));
     } finally {
@@ -660,7 +716,8 @@
       </button>
       <button @click="page='orders'" :class="page==='orders' ? 'nav-active' : 'hover:bg-white/5 text-gray-300'" class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition">
         <i class="fa-solid fa-truck-fast w-4 text-center"></i> Commandes
-        <span class="ml-auto text-[10px] font-bold bg-accent text-ink-900 rounded-full px-1.5 py-0.5">6</span>
+        <!-- Badge = commandes en attente fournisseur (réelles une fois connecté, démo sinon). -->
+        <span x-show="pendingOrdersCount() > 0" class="ml-auto text-[10px] font-bold bg-accent text-ink-900 rounded-full px-1.5 py-0.5" x-text="pendingOrdersCount()"></span>
       </button>
       <button @click="page='mockups'" :class="page==='mockups' ? 'nav-active' : 'hover:bg-white/5 text-gray-300'" class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition">
         <i class="fa-solid fa-image w-4 text-center"></i> Mockups IA
@@ -681,6 +738,12 @@
       </button>
       <button @click="page='promotion'" :class="page==='promotion' ? 'nav-active' : 'hover:bg-white/5 text-gray-300'" class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition">
         <i class="fa-solid fa-bullhorn w-4 text-center"></i> Promotion
+      </button>
+      <!-- Réseaux sociaux : section à venir (table social_posts déjà prévue
+           côté DB — voir database_schema.sql). Désactivé volontairement. -->
+      <button disabled aria-disabled="true" title="Bientôt disponible" class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-gray-500 cursor-not-allowed opacity-70">
+        <i class="fa-solid fa-share-nodes w-4 text-center"></i> Réseaux
+        <span class="ml-auto text-[10px] font-bold uppercase tracking-wide bg-white/10 text-gray-400 rounded-full px-1.5 py-0.5">Bientôt</span>
       </button>
 
       <p class="px-3 pt-4 pb-1 text-[10px] font-bold uppercase tracking-wider text-gray-500">Pilotage</p>
@@ -713,8 +776,8 @@
       <div class="flex items-center gap-2.5 px-1">
         <img src="https://i.pravatar.cc/64?img=47" class="w-8 h-8 rounded-full ring-2 ring-white/10">
         <div class="min-w-0">
-          <p class="text-white text-xs font-semibold truncate">Lumino Bijoux</p>
-          <p class="text-gray-500 text-[11px] truncate">contact@luminobijoux.fr</p>
+          <p class="text-white text-xs font-semibold truncate" x-text="currentUserEmail ? (etsyShopName || 'Ma boutique') : 'Lumino Bijoux'"></p>
+          <p class="text-gray-500 text-[11px] truncate" x-text="currentUserEmail || 'contact@luminobijoux.fr'"></p>
         </div>
         <i class="fa-solid fa-ellipsis-vertical text-gray-500 text-xs ml-auto"></i>
       </div>
@@ -802,26 +865,36 @@
             <p x-show="!etsyConnected" class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +9,6% vs mois dernier (démo)</p>
             <p x-show="etsyConnected" class="text-xs text-gray-400 mt-1">Commandes payées synchronisées (voir Paramètres pour resynchroniser).</p>
           </div>
+          <!-- Connecté : panier moyen (calculé depuis les commandes réelles).
+               Démo : note boutique — jamais affichée pour une boutique
+               connectée, l'API Etsy v3 ne l'expose pas (voir bandeau plus bas). -->
           <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4">
             <div class="flex items-center justify-between mb-2">
-              <span class="text-xs font-semibold text-gray-500">Note boutique</span>
-              <i class="fa-solid fa-star text-amber-400 text-sm"></i>
+              <span class="text-xs font-semibold text-gray-500" x-text="etsyConnected ? 'Panier moyen (30j)' : 'Note boutique'"></span>
+              <i class="fa-solid text-sm" :class="etsyConnected ? 'fa-basket-shopping text-accent' : 'fa-star text-amber-400'"></i>
             </div>
-            <!-- La note/avis boutique n'est pas exposée par l'API Etsy v3 à une
-                 appli tierce (pas d'endpoint public pour les reviews agrégées
-                 d'une boutique) — jamais inventée pour une boutique connectée. -->
-            <p class="text-2xl font-extrabold text-ink-900 num" x-text="etsyConnected ? 'N/D' : '4,9 / 5'"></p>
+            <p class="text-2xl font-extrabold text-ink-900 num" x-text="etsyConnected ? (ordersCount ? formatRevenue(avgOrderValue) : '–') : '4,9 / 5'"></p>
             <p x-show="!etsyConnected" class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +0,1 vs mois dernier (démo)</p>
-            <p x-show="etsyConnected" class="text-xs text-gray-400 mt-1">Non disponible via API Etsy.</p>
+            <p x-show="etsyConnected" class="text-xs text-gray-400 mt-1 truncate" :title="topProductTitle || ''" x-text="topProductTitle ? ('Top : ' + topProductTitle) : 'Aucune vente sur 30 jours.'"></p>
           </div>
+        </div>
+
+        <!-- Métriques que l'API Etsy v3 n'expose PAS à une appli tierce :
+             affichées en "–" plutôt qu'inventées (Shop Manager uniquement). -->
+        <div x-show="etsyConnected" class="bg-white rounded-xl border border-gray-200 shadow-card px-5 py-3 flex flex-wrap items-center gap-x-6 gap-y-2 text-xs">
+          <span class="text-[11px] font-bold uppercase tracking-widest text-gray-400"><i class="fa-solid fa-lock mr-1.5"></i>Non disponible via API Etsy</span>
+          <span class="text-gray-500">Taux de conversion <span class="font-bold text-ink-900 num ml-1">–</span></span>
+          <span class="text-gray-500">Visiteurs <span class="font-bold text-ink-900 num ml-1">–</span></span>
+          <span class="text-gray-500">Sources de trafic <span class="font-bold text-ink-900 num ml-1">–</span></span>
+          <span class="text-gray-500">Note boutique <span class="font-bold text-ink-900 num ml-1">–</span></span>
         </div>
 
         <div class="grid grid-cols-3 gap-4">
           <div @dblclick="openFocusMode('chartRevenue')" title="Double-clic pour agrandir" class="col-span-2 bg-white rounded-xl border border-gray-200 shadow-card p-5 cursor-zoom-in">
             <div class="flex items-center justify-between mb-4">
               <div>
-                <h3 class="font-bold text-sm text-ink-900">Revenu &amp; bénéfice net</h3>
-                <p class="text-xs text-gray-500">6 derniers mois</p>
+                <h3 class="font-bold text-sm text-ink-900" x-text="etsyConnected ? 'Revenu & revenu net (après frais Etsy)' : 'Revenu & bénéfice net'"></h3>
+                <p class="text-xs text-gray-500" x-text="etsyConnected ? '12 derniers mois — commandes Etsy synchronisées' : '6 derniers mois'"></p>
               </div>
               <div class="flex gap-3 text-xs font-semibold">
                 <span class="flex items-center gap-1.5 text-gray-600"><span class="w-2.5 h-2.5 rounded-full bg-accent"></span>Revenu</span>
@@ -834,11 +907,13 @@
             <h3 class="font-bold text-sm text-ink-900 mb-1">Statut des commandes</h3>
             <p class="text-xs text-gray-500 mb-4">30 derniers jours</p>
             <canvas id="chartOrdersStatus" height="150"></canvas>
+            <!-- Légende alimentée par orderStatusCounts() : chiffres de démo
+                 hors connexion, répartition réelle (status_breakdown de
+                 /api/analytics/revenue) une fois la boutique connectée. -->
             <div class="mt-4 space-y-1.5 text-xs">
-              <div class="flex justify-between"><span class="flex items-center gap-1.5 text-gray-600"><span class="w-2 h-2 rounded-full bg-accent"></span>Livrées</span><span class="font-semibold">276</span></div>
-              <div class="flex justify-between"><span class="flex items-center gap-1.5 text-gray-600"><span class="w-2 h-2 rounded-full bg-blue-400"></span>En transit</span><span class="font-semibold">48</span></div>
-              <div class="flex justify-between"><span class="flex items-center gap-1.5 text-gray-600"><span class="w-2 h-2 rounded-full bg-amber-400"></span>En attente</span><span class="font-semibold">12</span></div>
-              <div class="flex justify-between"><span class="flex items-center gap-1.5 text-gray-600"><span class="w-2 h-2 rounded-full bg-rose-400"></span>Retard/Litige</span><span class="font-semibold">6</span></div>
+              <template x-for="row in orderStatusCounts()" :key="row.key">
+                <div class="flex justify-between"><span class="flex items-center gap-1.5 text-gray-600"><span class="w-2 h-2 rounded-full" :class="row.dot"></span><span x-text="row.label"></span></span><span class="font-semibold num" x-text="row.count"></span></div>
+              </template>
             </div>
           </div>
         </div>
@@ -846,7 +921,11 @@
         <div class="grid grid-cols-3 gap-4">
           <div class="col-span-2 bg-white rounded-xl border border-gray-200 shadow-card p-5">
             <h3 class="font-bold text-sm text-ink-900 mb-4">Top produits (30 jours)</h3>
-            <table class="w-full text-sm">
+            <!-- Démo : tableau statique. Connecté : top_products réel de
+                 /api/analytics/revenue (items des commandes synchronisées).
+                 Marge et tendance 7j ne sont pas déductibles de l'API Etsy
+                 pour une fiche importée → "–", jamais inventées. -->
+            <table x-show="!etsyConnected" class="w-full text-sm">
               <thead><tr class="text-left text-xs text-gray-500 border-b border-gray-100">
                 <th class="pb-2 font-semibold">Produit</th><th class="pb-2 font-semibold">Ventes</th><th class="pb-2 font-semibold">Revenu</th><th class="pb-2 font-semibold">Marge</th><th class="pb-2 font-semibold">Tendance 7j</th>
               </tr></thead>
@@ -857,14 +936,46 @@
                 <tr><td class="py-2.5 flex items-center gap-2"><img src="https://picsum.photos/seed/earrings4/32" class="w-8 h-8 rounded-lg object-cover"><span class="font-medium">Boucles d'oreilles constellation</span></td><td>38</td><td class="font-semibold">834,20 €</td><td><span class="tag-pill bg-accent-light text-accent-dark">39%</span></td><td><svg viewBox="0 0 64 24" width="64" height="24"><polyline points="1.00,23.00 11.33,15.68 21.67,8.36 32.00,19.34 42.33,12.02 52.67,1.04 63.00,8.36" fill="none" stroke="#00C896" stroke-width="1.5"></polyline></svg></td></tr>
               </tbody>
             </table>
+            <table x-show="etsyConnected && topProducts.length" class="w-full text-sm">
+              <thead><tr class="text-left text-xs text-gray-500 border-b border-gray-100">
+                <th class="pb-2 font-semibold">Produit</th><th class="pb-2 font-semibold">Ventes</th><th class="pb-2 font-semibold">Revenu</th><th class="pb-2 font-semibold">Marge</th><th class="pb-2 font-semibold">Tendance 7j</th>
+              </tr></thead>
+              <tbody class="divide-y divide-gray-50">
+                <template x-for="tp in topProducts" :key="tp.listing_id">
+                  <tr class="hover:bg-gray-50">
+                    <td class="py-2.5 flex items-center gap-2 min-w-0"><img :src="catalogImageFor(tp.listing_id)" class="w-8 h-8 rounded-lg object-cover flex-shrink-0"><span class="font-medium truncate max-w-[280px]" :title="tp.title" x-text="tp.title"></span></td>
+                    <td class="num" x-text="tp.units"></td>
+                    <td class="font-semibold num" x-text="formatRevenue(tp.revenue)"></td>
+                    <td class="text-gray-400">–</td>
+                    <td class="text-gray-400">–</td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+            <div x-show="etsyConnected && !topProducts.length" class="py-8 text-center">
+              <i class="fa-solid fa-chart-simple text-2xl text-gray-300 mb-2 block"></i>
+              <p class="text-sm font-semibold text-ink-900 mb-1">Aucune vente sur 30 jours</p>
+              <p class="text-xs text-gray-500">Le top produits apparaîtra dès qu'une commande payée sera synchronisée.</p>
+            </div>
           </div>
           <div class="bg-white rounded-xl border border-gray-200 shadow-card p-5">
             <h3 class="font-bold text-sm text-ink-900 mb-3">Alertes récentes</h3>
-            <div class="space-y-3 text-sm">
+            <div x-show="!etsyConnected" class="space-y-3 text-sm">
               <div class="flex gap-2.5"><i class="fa-solid fa-triangle-exclamation text-rose-500 mt-0.5 text-xs"></i><p><span class="font-semibold">Bague prénom ajustable</span> rupture de stock chez Eprolo.</p></div>
               <div class="flex gap-2.5"><i class="fa-solid fa-arrow-trend-down text-amber-500 mt-0.5 text-xs"></i><p><span class="font-semibold">Collier zodiaque</span> a chuté hors du top 8 sur "collier signe astro".</p></div>
               <div class="flex gap-2.5"><i class="fa-solid fa-robot text-accent mt-0.5 text-xs"></i><p>Nouveau rapport IA disponible : 3 actions prioritaires.</p></div>
               <div class="flex gap-2.5"><i class="fa-solid fa-truck text-blue-500 mt-0.5 text-xs"></i><p>4 commandes en retard de livraison &gt; 12 jours (CJ Dropshipping).</p></div>
+            </div>
+            <!-- Connecté : alertes déduites des vraies données (stock Etsy,
+                 commandes en attente, coûts fournisseur manquants). -->
+            <div x-show="etsyConnected" class="space-y-3 text-sm">
+              <template x-for="(a, i) in realAlerts()" :key="i">
+                <div class="flex gap-2.5"><i class="fa-solid mt-0.5 text-xs" :class="a.icon"></i><p><span class="font-semibold" x-text="a.strong"></span><span x-text="a.text"></span></p></div>
+              </template>
+              <div x-show="!realAlerts().length" class="py-6 text-center">
+                <i class="fa-solid fa-circle-check text-2xl text-accent mb-2 block"></i>
+                <p class="text-xs text-gray-500">Aucune alerte — tout est en ordre.</p>
+              </div>
             </div>
           </div>
         </div>
@@ -880,7 +991,9 @@
                affichait quand même "6 produits actifs". -->
           <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Produits actifs</p><p class="text-2xl font-extrabold" x-text="catalogProducts.length"></p></div>
           <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Variantes totales</p><p class="text-2xl font-extrabold" x-text="catalogProducts.reduce((sum, p) => sum + (p.variantsCount || 0), 0)"></p></div>
-          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Marge moyenne</p><p class="text-2xl font-extrabold text-accent-dark" x-text="(catalogProducts.length ? (catalogProducts.reduce((sum, p) => sum + (p.margin || 0), 0) / catalogProducts.length) : 0).toFixed(1).replace('.', ',') + '%'"></p></div>
+          <!-- Moyenne sur les seules fiches dont la marge est connue (coût
+               fournisseur saisi) — "–" sinon. -->
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Marge moyenne</p><p class="text-2xl font-extrabold text-accent-dark" x-text="(() => { const k = catalogProducts.filter(p => typeof p.margin === 'number'); return k.length ? (k.reduce((s, p) => s + p.margin, 0) / k.length).toFixed(1).replace('.', ',') + '%' : '–'; })()"></p></div>
           <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Ruptures de stock</p><p class="text-2xl font-extrabold text-rose-500" x-text="catalogProducts.filter(p => p.stock === 'rupture').length"></p></div>
         </div>
 
@@ -895,14 +1008,18 @@
                     :class="p.stock==='disponible' ? 'bg-accent-light text-accent-dark' : (p.stock==='stock_faible' ? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-600')"
                     x-text="p.stock==='disponible' ? 'Disponible' : (p.stock==='stock_faible' ? 'Stock faible' : 'Rupture')"></span>
                 </div>
-                <p class="text-xs text-gray-500 mb-3" x-text="p.variantsCount + ' variantes · ' + p.supplier"></p>
+                <p class="text-xs text-gray-500 mb-1" x-text="p.variantsCount + ' variante' + (p.variantsCount > 1 ? 's' : '') + ' · ' + p.supplier"></p>
+                <p x-show="p.variantSummary" class="text-[11px] text-gray-400 mb-3 truncate" :title="p.variantSummary" x-text="p.variantSummary"></p>
+                <p x-show="!p.variantSummary" class="mb-2"></p>
                 <div class="grid grid-cols-2 gap-2 text-xs mb-3">
                   <div><p class="text-gray-400">Prix</p><p class="font-semibold" x-text="p.priceMin.toFixed(2)+' – '+p.priceMax.toFixed(2)+' €'"></p></div>
-                  <div><p class="text-gray-400">Marge nette</p><p class="font-semibold text-accent-dark" x-text="p.margin+'%'"></p></div>
+                  <div><p class="text-gray-400">Marge nette</p><p class="font-semibold" :class="typeof p.margin === 'number' ? (p.margin >= 25 ? 'text-accent-dark' : (p.margin >= 15 ? 'text-amber-600' : 'text-rose-500')) : 'text-gray-400'" x-text="typeof p.margin === 'number' ? p.margin + '%' : '–'" :title="typeof p.margin === 'number' ? '' : 'Renseigne le prix fournisseur dans la fiche'"></p></div>
                 </div>
                 <div class="flex items-center justify-between mb-4">
                   <p class="text-[11px] text-gray-400 font-semibold uppercase tracking-wide">Tendance 7j</p>
-                  <div x-html="sparklineSvg(sparkData[p.id])"></div>
+                  <!-- Ventes/jour sur 7 jours : démo uniquement — Etsy n'expose pas de série journalière par fiche. -->
+                  <div x-show="sparkData[p.id]" x-html="sparklineSvg(sparkData[p.id])"></div>
+                  <span x-show="!sparkData[p.id]" class="text-xs text-gray-400" title="Non disponible via API Etsy">–</span>
                 </div>
                 <button @click="openProductModal(p)" class="mt-auto w-full bg-ink-900 hover:bg-ink-700 text-white text-xs font-semibold py-2 rounded-lg transition">Voir fiche complète</button>
               </div>
@@ -933,8 +1050,8 @@
                 <!-- Galerie -->
                 <div class="relative rounded-xl overflow-hidden bg-gray-100">
                   <img :src="selectedProduct.images[galleryIndex]" class="w-full h-80 object-cover">
-                  <button @click="prevImage()" class="absolute left-3 top-1/2 -translate-y-1/2 w-9 h-9 rounded-full bg-white/90 hover:bg-white flex items-center justify-center shadow"><i class="fa-solid fa-chevron-left"></i></button>
-                  <button @click="nextImage()" class="absolute right-3 top-1/2 -translate-y-1/2 w-9 h-9 rounded-full bg-white/90 hover:bg-white flex items-center justify-center shadow"><i class="fa-solid fa-chevron-right"></i></button>
+                  <button x-show="selectedProduct.images.length > 1" @click="prevImage()" class="absolute left-3 top-1/2 -translate-y-1/2 w-9 h-9 rounded-full bg-white/90 hover:bg-white flex items-center justify-center shadow"><i class="fa-solid fa-chevron-left"></i></button>
+                  <button x-show="selectedProduct.images.length > 1" @click="nextImage()" class="absolute right-3 top-1/2 -translate-y-1/2 w-9 h-9 rounded-full bg-white/90 hover:bg-white flex items-center justify-center shadow"><i class="fa-solid fa-chevron-right"></i></button>
                   <div class="absolute bottom-3 left-1/2 -translate-x-1/2 flex gap-1.5">
                     <template x-for="(img, i) in selectedProduct.images" :key="i">
                       <button @click="galleryIndex = i" class="w-2 h-2 rounded-full" :class="galleryIndex===i ? 'bg-white' : 'bg-white/50'"></button>
@@ -991,7 +1108,10 @@
 
                 <!-- Variantes -->
                 <div>
-                  <h3 class="font-bold text-sm text-ink-900 mb-2">Variantes</h3>
+                  <div class="flex items-center justify-between gap-3 mb-2 flex-wrap">
+                    <h3 class="font-bold text-sm text-ink-900" x-text="'Variantes (' + selectedProduct.variants.length + ')'"></h3>
+                    <p x-show="selectedProduct.variantSummary" class="text-xs text-gray-500 truncate" :title="selectedProduct.variantSummary" x-text="selectedProduct.variantSummary"></p>
+                  </div>
                   <div class="overflow-x-auto">
                   <table class="w-full text-sm">
                     <thead><tr class="text-left text-xs text-gray-500 border-b border-gray-100"><th class="pb-2 font-semibold">Variante</th><th class="pb-2 font-semibold">Stock</th><th class="pb-2 font-semibold">Prix</th></tr></thead>
@@ -1014,10 +1134,51 @@
                     </div>
                     <label class="flex items-center gap-2 text-xs font-semibold text-gray-600 cursor-pointer select-none">
                       <input type="checkbox" x-model="selectedProduct.freeShipping" class="accent-accent w-4 h-4">
-                      Livraison gratuite (recalcule le prix pour 35% de marge)
+                      Livraison gratuite (inclut le port dans le prix)
                     </label>
                   </div>
-                  <p class="text-xs text-gray-500 mb-2">Simulateur de prix de vente cible (35% de marge nette) à partir du coût fournisseur — Etsy ne fournit pas de prix réels par pays à une appli tierce.</p>
+                  <p class="text-xs text-gray-500 mb-3">Simulateur de prix de vente cible à partir de <strong>ton</strong> coût fournisseur et de ta marge cible — Etsy ne fournit ni coût d'achat ni prix réels par pays à une appli tierce.</p>
+
+                  <!-- Coût fournisseur & marge cible : saisis à la main, sauvegardés
+                       en DB (listings.cost_price / target_margin — PATCH
+                       /api/listings/{id}/pricing) pour une fiche réelle ; en
+                       mémoire seulement pour une fiche de démo. -->
+                  <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4 p-4 rounded-xl bg-gray-50 border border-gray-100">
+                    <div>
+                      <label class="block text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Prix fournisseur (€)</label>
+                      <input type="number" min="0" step="0.01" placeholder="ex. 12,50"
+                             :value="selectedProduct.costPrice ?? selectedProduct.baseCost ?? ''"
+                             @input="selectedProduct.costPrice = $event.target.value === '' ? null : Math.max(0, parseFloat($event.target.value) || 0); selectedProduct.baseCost = selectedProduct.costPrice; pricingDirty = true"
+                             class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-accent num">
+                    </div>
+                    <div>
+                      <label class="block text-[11px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Marge cible (%)</label>
+                      <input type="number" min="0" max="95" step="1"
+                             :value="selectedProduct.targetMargin ?? 35"
+                             @input="selectedProduct.targetMargin = Math.min(95, Math.max(0, parseFloat($event.target.value) || 0)); pricingDirty = true"
+                             class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-accent num">
+                    </div>
+                    <div class="flex items-end">
+                      <button @click="savePricing()" :disabled="!pricingDirty || pricingSaving"
+                              class="w-full bg-ink-900 hover:bg-ink-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-semibold py-2.5 rounded-lg transition">
+                        <i class="fa-solid mr-1.5" :class="pricingSaving ? 'fa-spinner fa-spin' : (pricingSaved ? 'fa-check' : 'fa-floppy-disk')"></i>
+                        <span x-text="pricingSaving ? 'Enregistrement…' : (pricingSaved ? 'Enregistré' : 'Enregistrer')"></span>
+                      </button>
+                    </div>
+                    <p x-show="pricingError" class="sm:col-span-3 text-xs text-rose-500" x-text="pricingError"></p>
+                  </div>
+
+                  <!-- État vide : pas de coût fournisseur → pas de simulation
+                       (on ne prend jamais le prix de vente Etsy pour un coût). -->
+                  <template x-if="!hasCostPrice()">
+                  <div class="border border-dashed border-gray-200 rounded-xl p-6 text-center">
+                    <i class="fa-solid fa-calculator text-2xl text-gray-300 mb-2 block"></i>
+                    <p class="text-sm font-semibold text-ink-900 mb-1">Renseigne ton prix fournisseur</p>
+                    <p class="text-xs text-gray-500">Le simulateur calcule un prix de vente par pays dès que le coût d'achat est connu.</p>
+                  </div>
+                  </template>
+
+                  <template x-if="hasCostPrice()">
                   <div class="overflow-x-auto">
                   <table class="w-full text-sm min-w-[760px]">
                     <thead><tr class="text-left text-xs text-gray-500 border-b border-gray-100">
@@ -1038,6 +1199,7 @@
                     </tbody>
                   </table>
                   </div>
+                  </template>
                 </div>
 
                 <!-- Fournisseurs -->
@@ -1050,6 +1212,13 @@
                         <p class="text-xs text-gray-500 mt-1" x-text="s.available ? s.price.toFixed(2)+' € · '+s.delay : 'Non disponible'"></p>
                       </div>
                     </template>
+                  </div>
+                  <!-- Fiche importée d'Etsy : aucun fournisseur lié (section
+                       Sourcing / coût de revient à venir). -->
+                  <div x-show="!selectedProduct.suppliers.length" class="border border-dashed border-gray-200 rounded-xl p-5 text-center">
+                    <i class="fa-solid fa-truck-ramp-box text-xl text-gray-300 mb-2 block"></i>
+                    <p class="text-xs text-gray-500 mb-3">Aucun fournisseur lié à cette fiche pour le moment.</p>
+                    <button @click="closeProductModal(); page='sourcing'" class="bg-ink-900 hover:bg-ink-700 text-white text-xs font-semibold px-4 py-2 rounded-lg transition">Comparer des fournisseurs</button>
                   </div>
                 </div>
 
@@ -1192,16 +1361,18 @@
           <div class="overflow-x-auto px-5 pb-5">
           <table class="w-full text-sm min-w-[920px]">
             <thead><tr class="text-left text-xs text-gray-500 border-b border-gray-100">
-              <th class="pb-2 font-semibold">Commande</th><th class="pb-2 font-semibold">Client</th><th class="pb-2 font-semibold">Produit</th><th class="pb-2 font-semibold">Fournisseur</th><th class="pb-2 font-semibold">Montant</th><th class="pb-2 font-semibold">Statut</th><th class="pb-2 font-semibold">Suivi</th>
+              <th class="pb-2 font-semibold">Commande</th><th class="pb-2 font-semibold">Date</th><th class="pb-2 font-semibold">Client</th><th class="pb-2 font-semibold">Produit</th><th class="pb-2 font-semibold">Articles</th><th class="pb-2 font-semibold">Fournisseur</th><th class="pb-2 font-semibold">Montant</th><th class="pb-2 font-semibold">Statut</th><th class="pb-2 font-semibold">Suivi</th>
             </tr></thead>
             <tbody class="divide-y divide-gray-50">
               <template x-for="o in orders" :key="o.id">
-                <tr :class="orderRowClass(o.status)">
-                  <td class="py-3 font-medium" x-text="o.id"></td>
+                <tr class="hover:bg-gray-50" :class="orderRowClass(o.status)">
+                  <td class="py-3 font-medium whitespace-nowrap" x-text="o.id"></td>
+                  <td class="text-gray-500 whitespace-nowrap" x-text="o.date || '—'"></td>
                   <td x-text="o.customer"></td>
-                  <td x-text="o.product"></td>
+                  <td class="max-w-[280px] truncate" :title="o.product" x-text="o.product"></td>
+                  <td class="num" x-text="o.itemsCount ?? 1"></td>
                   <td x-text="o.supplier"></td>
-                  <td class="font-semibold" x-text="o.amount.toFixed(2).replace('.', ',')+' €'"></td>
+                  <td class="font-semibold whitespace-nowrap num" x-text="formatRevenue(o.amount)"></td>
                   <td><span class="tag-pill" :class="orderStatusMeta(o.status).pill" x-text="orderStatusMeta(o.status).label"></span></td>
                   <td class="text-gray-400 font-mono text-xs" x-text="o.tracking"></td>
                 </tr>
@@ -1210,7 +1381,7 @@
                    importée — jamais les 7 commandes de démo une fois
                    réellement connecté. -->
               <tr x-show="etsyConnected && orders.length === 0">
-                <td colspan="7" class="py-10 text-center">
+                <td colspan="9" class="py-10 text-center">
                   <i class="fa-solid fa-inbox text-3xl text-gray-300 mb-3 block"></i>
                   <p class="font-semibold text-sm text-ink-900 mb-1">Aucune commande trouvée</p>
                   <p class="text-xs text-gray-500">Ta boutique Etsy est connectée mais aucune commande n'a encore été synchronisée.</p>
@@ -1425,10 +1596,13 @@
       <template x-if="page==='analytics'"><div class="fade-enter space-y-6 max-w-7xl mx-auto">
 
         <div class="grid grid-cols-4 gap-4">
-          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Revenu (année)</p><p class="text-xl font-extrabold num">61 240 €</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +18,4% vs mois dernier</p></div>
-          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Marge nette moyenne</p><p class="text-xl font-extrabold text-accent-dark">41,8%</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +2,1 pt vs mois dernier</p></div>
-          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Taux conversion moyen</p><p class="text-xl font-extrabold text-gray-400">N/D</p><p class="text-xs text-gray-400 font-semibold mt-1">Non disponible via API Etsy</p></div>
-          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Bénéfice réel (année)</p><p class="text-xl font-extrabold num">25 598 €</p><p class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +21,2% vs mois dernier</p></div>
+          <!-- Connecté : agrégats réels sur l'historique 12 mois (revenueHistory,
+               /api/analytics/revenue). Démo sinon. Aucun % "vs mois dernier"
+               inventé pour une boutique connectée. -->
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Revenu (12 mois)</p><p class="text-xl font-extrabold num" x-text="etsyConnected ? formatRevenue(yearTotals().revenue) : '61 240 €'"></p><p x-show="!etsyConnected" class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +18,4% vs mois dernier</p><p x-show="etsyConnected" class="text-xs text-gray-400 mt-1" x-text="yearTotals().orders + ' commande(s) payée(s)'"></p></div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1" x-text="etsyConnected ? 'Marge après frais Etsy' : 'Marge nette moyenne'"></p><p class="text-xl font-extrabold text-accent-dark num" x-text="etsyConnected ? (yearTotals().revenue ? (yearTotals().marginPct.toFixed(1).replace('.', ',') + '%') : '–') : '41,8%'"></p><p x-show="!etsyConnected" class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +2,1 pt vs mois dernier</p><p x-show="etsyConnected" class="text-xs text-gray-400 mt-1">Hors coût fournisseur.</p></div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1">Taux conversion moyen</p><p class="text-xl font-extrabold text-gray-400">–</p><p class="text-xs text-gray-400 font-semibold mt-1">Non disponible via API Etsy</p></div>
+          <div class="bg-white rounded-xl border border-gray-200 shadow-card p-4"><p class="text-xs font-semibold text-gray-500 mb-1" x-text="etsyConnected ? 'Revenu net (12 mois)' : 'Bénéfice réel (année)'"></p><p class="text-xl font-extrabold num" x-text="etsyConnected ? formatRevenue(yearTotals().profit) : '25 598 €'"></p><p x-show="!etsyConnected" class="text-xs text-accent-dark font-semibold mt-1"><i class="fa-solid fa-arrow-up"></i> +21,2% vs mois dernier</p><p x-show="etsyConnected" class="text-xs text-gray-400 mt-1">Après frais Etsy (6,5% + 0,20 € + change 1,8%).</p></div>
         </div>
 
         <div class="grid grid-cols-3 gap-4">
@@ -1882,8 +2056,64 @@ function app() {
     // Supabase locale n'est pas restaurée ou que le formulaire n'a pas validé.
     etsyConnected: false,
     currentUserEmail: null,
+    etsyShopName: null,
     etsyShopNameInput: '',
     etsyResyncing: false,
+    // Agrégats réels de /api/analytics/revenue (voir _edPostAuth) —
+    // top_products, répartition par statut et historique mensuel 12 mois.
+    avgOrderValue: 0,
+    topProducts: [],
+    orderStatusBreakdown: {},
+    revenueHistory: [],
+    pendingOrdersCount() {
+      return this.orders.filter(o => o.status === 'pending_supplier').length;
+    },
+    // Légende du donut "Statut des commandes" — même ordre/couleurs que le
+    // dataset de chartOrdersStatus (voir mountCharts).
+    orderStatusCounts() {
+      if (!this.etsyConnected) {
+        return [
+          { key: 'delivered', label: 'Livrées', dot: 'bg-accent', count: 276 },
+          { key: 'in_transit', label: 'En transit', dot: 'bg-blue-400', count: 48 },
+          { key: 'pending_supplier', label: 'En attente', dot: 'bg-amber-400', count: 12 },
+          { key: 'delayed', label: 'Retard/Litige', dot: 'bg-rose-400', count: 6 }
+        ];
+      }
+      const b = this.orderStatusBreakdown || {};
+      return [
+        { key: 'in_transit', label: 'Expédiées', dot: 'bg-accent', count: b.in_transit || 0 },
+        { key: 'pending_supplier', label: 'À expédier', dot: 'bg-amber-400', count: b.pending_supplier || 0 },
+        { key: 'delivered', label: 'Livrées', dot: 'bg-blue-400', count: b.delivered || 0 },
+        { key: 'return_requested', label: 'Remboursées/Annulées', dot: 'bg-rose-400', count: (b.return_requested || 0) + (b.delayed || 0) }
+      ];
+    },
+    // Alertes déduites des données réelles — jamais de texte de démo une
+    // fois connecté.
+    realAlerts() {
+      const alerts = [];
+      const out = this.catalogProducts.filter(p => p.stock === 'rupture');
+      const low = this.catalogProducts.filter(p => p.stock === 'stock_faible');
+      out.slice(0, 2).forEach(p => alerts.push({ icon: 'fa-triangle-exclamation text-rose-500', strong: p.name, text: ' est en rupture de stock sur Etsy.' }));
+      if (out.length > 2) alerts.push({ icon: 'fa-triangle-exclamation text-rose-500', strong: (out.length - 2) + ' autre(s) fiche(s)', text: ' en rupture de stock.' });
+      if (low.length) alerts.push({ icon: 'fa-arrow-trend-down text-amber-500', strong: low.length + ' fiche(s)', text: ' avec un stock faible (< 5 unités).' });
+      const pending = this.pendingOrdersCount();
+      if (pending) alerts.push({ icon: 'fa-truck text-blue-500', strong: pending + ' commande(s)', text: ' payée(s) en attente d\'expédition.' });
+      const noCost = this.catalogProducts.filter(p => p.costPrice === null || p.costPrice === undefined).length;
+      if (noCost) alerts.push({ icon: 'fa-calculator text-gray-400', strong: noCost + ' fiche(s)', text: ' sans prix fournisseur — renseigne-le pour activer le simulateur de marge.' });
+      return alerts.slice(0, 5);
+    },
+    // Totaux 12 mois depuis revenueHistory (page Analytics).
+    yearTotals() {
+      const h = Array.isArray(this.revenueHistory) ? this.revenueHistory : [];
+      const revenue = h.reduce((s, m) => s + (m.revenue || 0), 0);
+      const profit = h.reduce((s, m) => s + (m.profit || 0), 0);
+      const orders = h.reduce((s, m) => s + (m.orders || 0), 0);
+      return { revenue, profit, orders, marginPct: revenue ? (profit / revenue) * 100 : 0 };
+    },
+    catalogImageFor(etsyListingId) {
+      const p = this.catalogProducts.find(x => x.etsyListingId === String(etsyListingId));
+      return p ? p.image : (window.ED_NO_IMAGE || '');
+    },
 
     // ===== Commandes (Etsy — flux de fulfillment) =====
     // Statut brut = valeur de l'enum OrderStatus (backend/models.py) — le
@@ -2031,9 +2261,15 @@ function app() {
     formatRevenue(v) {
       return v.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €';
     },
+    _revenueAnimId: 0,
     animateRevenue(from, to, duration) {
+      // Jeton : une nouvelle animation (ex. vraie valeur chargée par
+      // _edPostAuth pendant le count-up de démo) annule la précédente, sinon
+      // les frames restantes de l'ancienne écrasent la valeur réelle.
+      const id = ++this._revenueAnimId;
       const start = performance.now();
       const step = (now) => {
+        if (id !== this._revenueAnimId) return;
         const t = Math.min(1, (now - start) / duration);
         const eased = 1 - Math.pow(1 - t, 3);
         this.revenueDisplay = from + (to - from) * eased;
@@ -2045,6 +2281,9 @@ function app() {
     startRevenueTicker() {
       this.animateRevenue(0, this.revenueTotal, 1500);
       setInterval(() => {
+        // Micro-ventes simulées = démo uniquement : sur une boutique connectée
+        // le revenu vient de la DB, on n'y ajoute jamais un centime fictif.
+        if (this.etsyConnected) return;
         const previousTotal = this.revenueTotal;
         this.revenueTotal += Math.random() * 63 + 24;
         this.animateRevenue(previousTotal, this.revenueTotal, 800);
@@ -2265,13 +2504,55 @@ function app() {
     selectedProduct: null,
     galleryIndex: 0,
     generatedListingVisible: false,
+    pricingDirty: false,
+    pricingSaving: false,
+    pricingSaved: false,
+    pricingError: '',
     openProductModal(p) {
       this.selectedProduct = p;
       this.galleryIndex = 0;
       this.generatedListingVisible = false;
+      this.pricingDirty = false;
+      this.pricingSaving = false;
+      this.pricingSaved = false;
+      this.pricingError = '';
+    },
+    // Sauvegarde coût fournisseur + marge cible (PATCH /api/listings/{id}/pricing).
+    // Une fiche de démo (pas d'UUID backend) reste en mémoire seulement.
+    async savePricing() {
+      const p = this.selectedProduct;
+      if (!p || this.pricingSaving) return;
+      this.pricingError = '';
+      this.pricingSaved = false;
+      if (!this.etsyConnected || !/^[0-9a-f-]{36}$/i.test(String(p.id))) {
+        this.pricingDirty = false;
+        this.pricingSaved = true;
+        return;
+      }
+      this.pricingSaving = true;
+      try {
+        const saved = await window.EDAPI.listingPricing(p.id, { cost_price: p.costPrice, target_margin: p.targetMargin });
+        p.costPrice = (typeof saved.cost_price === 'number') ? saved.cost_price : null;
+        p.baseCost = p.costPrice;
+        p.targetMargin = (typeof saved.target_margin === 'number') ? saved.target_margin : 35;
+        p.margin = (typeof p.costPrice === 'number' && p.priceMin > 0)
+          ? Math.round(((p.priceMin - p.costPrice - p.priceMin * 0.065 - 0.20) / p.priceMin) * 100)
+          : null;
+        this.pricingDirty = false;
+        this.pricingSaved = true;
+        setTimeout(() => { this.pricingSaved = false; }, 2500);
+      } catch (e) {
+        this.pricingError = 'Enregistrement impossible : ' + (e.message || 'erreur inconnue');
+      } finally {
+        this.pricingSaving = false;
+      }
     },
     closeProductModal() {
       this.selectedProduct = null;
+    },
+    hasCostPrice() {
+      const p = this.selectedProduct;
+      return !!p && typeof p.baseCost === 'number' && !isNaN(p.baseCost);
     },
     nextImage() {
       if (!this.selectedProduct) return;
@@ -2283,13 +2564,15 @@ function app() {
       this.galleryIndex = (this.galleryIndex - 1 + len) % len;
     },
     countryPricingRows(product) {
-      if (!product) return [];
-      const targetMargin = 0.35;
+      if (!product || product.baseCost === null || product.baseCost === undefined) return [];
+      // Marge cible réelle de la fiche (listings.target_margin, 35% par défaut),
+      // bornée pour que le dénominateur reste > 0.
+      const targetMargin = Math.min(0.9, Math.max(0, (typeof product.targetMargin === 'number' ? product.targetMargin : 35) / 100));
       return this.countries.map(c => {
         const shippingCost = product.freeShipping ? c.shipping : 0;
         const sellerCost = product.baseCost + shippingCost;
         const changePct = c.changeFeePct / 100;
-        const price = (sellerCost + 0.20) / (1 - 0.065 - changePct - targetMargin);
+        const price = (sellerCost + 0.20) / Math.max(0.05, 1 - 0.065 - changePct - targetMargin);
         const etsyFee = price * 0.065 + 0.20;
         const changeFee = price * changePct;
         const marginEur = price - sellerCost - etsyFee - changeFee;
@@ -2466,27 +2749,40 @@ function app() {
       const months = ['Avr','Mai','Juin','Juil','Août','Sept'];
       const fullMonths = ['Oct','Nov','Déc','Jan','Fév','Mar','Avr','Mai','Juin','Juil','Août','Sept'];
 
+      // Historique réel (12 mois, /api/analytics/revenue > history) une fois la
+      // boutique connectée — séries de démo sinon. Les mois sans commande
+      // restent à 0 : c'est la vraie courbe, pas une courbe lissée.
+      const connected = this.etsyConnected;
+      const hist = Array.isArray(this.revenueHistory) ? this.revenueHistory : [];
+      const realLabels = hist.map(h => h.period);
+      const realRevenue = hist.map(h => Math.round(h.revenue * 100) / 100);
+      const realProfit = hist.map(h => Math.round(h.profit * 100) / 100);
+      const sb = this.orderStatusBreakdown || {};
+      const realStatus = [sb.in_transit || 0, sb.pending_supplier || 0, sb.delivered || 0, (sb.return_requested || 0) + (sb.delayed || 0)];
+
       const defs = {
         chartRevenue: () => ({
           type: 'line',
-          data: { labels: months, datasets: [
-            { label:'Revenu', data:[5200,6100,6800,7300,7950,8432], borderColor: accent, backgroundColor:'rgba(0,200,150,0.08)', fill:true, tension:0.4, borderWidth:2.5, pointRadius:0, pointHoverRadius:5, pointHoverBackgroundColor:accent },
-            { label:'Bénéfice', data:[2050,2450,2740,2960,3260,3524], borderColor: ink, backgroundColor:'transparent', tension:0.4, borderWidth:2.5, pointRadius:0, pointHoverRadius:5, pointHoverBackgroundColor:ink }
+          data: { labels: connected ? realLabels : months, datasets: [
+            { label:'Revenu', data: connected ? realRevenue : [5200,6100,6800,7300,7950,8432], borderColor: accent, backgroundColor:'rgba(0,200,150,0.08)', fill:true, tension:0.4, borderWidth:2.5, pointRadius:0, pointHoverRadius:5, pointHoverBackgroundColor:accent },
+            { label: connected ? 'Revenu net' : 'Bénéfice', data: connected ? realProfit : [2050,2450,2740,2960,3260,3524], borderColor: ink, backgroundColor:'transparent', tension:0.4, borderWidth:2.5, pointRadius:0, pointHoverRadius:5, pointHoverBackgroundColor:ink }
           ]},
-          options: { plugins:{legend:{display:false}}, scales:{ y:{grid:{color:'#F1F2F4'}, ticks:{callback:v=>v+' €'}}, x:{grid:{display:false}} } }
+          options: { plugins:{legend:{display:false}}, scales:{ y:{beginAtZero:true, grid:{color:'#F1F2F4'}, ticks:{callback:v=>v+' €'}}, x:{grid:{display:false}} } }
         }),
         chartOrdersStatus: () => ({
           type: 'doughnut',
-          data: { labels:['Livrées','En transit','En attente','Retard'], datasets:[{ data:[276,48,12,6], backgroundColor:[accent, blue, amber, rose], borderWidth:0 }] },
+          data: connected
+            ? { labels:['Expédiées','À expédier','Livrées','Remboursées/Annulées'], datasets:[{ data: realStatus.some(v => v) ? realStatus : [0, 0, 0, 0], backgroundColor:[accent, amber, blue, rose], borderWidth:0 }] }
+            : { labels:['Livrées','En transit','En attente','Retard'], datasets:[{ data:[276,48,12,6], backgroundColor:[accent, blue, amber, rose], borderWidth:0 }] },
           options: { cutout:'72%', plugins:{legend:{display:false}} }
         }),
         chartAnalyticsMain: () => ({
           type: 'line',
-          data: { labels: fullMonths, datasets: [
-            { label:'Revenu', data:[3800,4200,4600,5100,5600,5200,6100,6800,7300,7950,8100,8432], borderColor: accent, backgroundColor:'rgba(0,200,150,0.08)', fill:true, tension:0.4, borderWidth:2.5, pointRadius:0, pointHoverRadius:5, pointHoverBackgroundColor:accent },
-            { label:'Bénéfice net', data:[1500,1680,1840,2040,2260,2050,2450,2740,2960,3260,3380,3524], borderColor: ink, tension:0.4, borderWidth:2.5, pointRadius:0, pointHoverRadius:5, pointHoverBackgroundColor:ink }
+          data: { labels: connected ? realLabels : fullMonths, datasets: [
+            { label:'Revenu', data: connected ? realRevenue : [3800,4200,4600,5100,5600,5200,6100,6800,7300,7950,8100,8432], borderColor: accent, backgroundColor:'rgba(0,200,150,0.08)', fill:true, tension:0.4, borderWidth:2.5, pointRadius:0, pointHoverRadius:5, pointHoverBackgroundColor:accent },
+            { label: connected ? 'Revenu net (après frais Etsy)' : 'Bénéfice net', data: connected ? realProfit : [1500,1680,1840,2040,2260,2050,2450,2740,2960,3260,3380,3524], borderColor: ink, tension:0.4, borderWidth:2.5, pointRadius:0, pointHoverRadius:5, pointHoverBackgroundColor:ink }
           ]},
-          options: { plugins:{legend:{position:'bottom', labels:{boxWidth:10, font:{size:11}}}}, scales:{ y:{grid:{color:'#F1F2F4'}}, x:{grid:{display:false}} } }
+          options: { plugins:{legend:{position:'bottom', labels:{boxWidth:10, font:{size:11}}}}, scales:{ y:{beginAtZero:true, grid:{color:'#F1F2F4'}}, x:{grid:{display:false}} } }
         }),
         chartTraffic: () => ({
           type: 'doughnut',
@@ -2521,6 +2817,18 @@ function app() {
       });
 
       if (this.darkMode) this.applyChartTheme();
+    },
+    // Appelé par _edPostAuth() une fois les données réelles chargées : les
+    // charts pilotés par la DB ont été construits avec les séries de démo (ou
+    // des séries vides) — on les détruit pour les reconstruire via mountCharts.
+    refreshDataCharts() {
+      ['chartRevenue', 'chartOrdersStatus', 'chartAnalyticsMain'].forEach(id => {
+        if (chartInstances[id]) {
+          chartInstances[id].destroy();
+          delete chartInstances[id];
+        }
+      });
+      this.$nextTick(() => this.mountCharts());
     },
     init() {
       this.computeCalc();
